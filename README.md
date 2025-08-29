@@ -41,6 +41,9 @@ hazy for first-timers but I presume you are a competent `Windows` or `Mac` user 
 functions and terms such as installing programs, if not, then you are going to have a bad time with `Arch` and
 I suggest you learn the basics via an `OS` like `Windows` or `Ubuntu` first.
 
+> **Note**
+> Your PC must be setup to enable Hardware Virtualization in the BIOS before you can attempt to follow this guide.
+
 ## Resources
 
 - [Arch Documentation](https://archlinux.org/)
