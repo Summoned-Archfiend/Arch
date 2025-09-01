@@ -199,9 +199,31 @@ mkdir /mnt/.snapshots
 mount -o noatime,ssd,compress=zstd,space_cache=v2,subvol=@snapshots /dev/sda2 /mnt/.snapshots
 ```
 
-
 We can then mount our other partitions. If you have a second `Btfs` partition you can either create
 snapshots or simply mount the partition as a whole.
+
+> **Note**
+> The above will give you a basic snapshot configuration. However, if you want something a little more
+> robust this is the snapshot sequence I will be following for my bare-metal installation. The below table
+> deatails each snapshot, the frequency, and reasoning. This is a bit more work but it provides a snapshot
+> system similar to how SteamOS operates. This means we can backup our main OS without affecting our files,
+> we can backup games if needed (for instance modded instances), and we can back up VMs before large experiments
+> across multiple VMs. 
+
+| Drive                    | Subvolume                                          | Snapshot Frequency                    | Purpose / Notes                                                                                                      |
+| ------------------------ | -------------------------------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **ROOT (476 GB)**        | `@` (root)                                         | Before updates (daily/weekly)         | Protect system from bad Arch updates. Roll back OS while keeping user data intact.                                   |
+|                          | `@home` (user configs, dotfiles, saves, some mods) | Weekly or before major config changes | Safety net for user configs and mod managers. Useful if you break desktop/WM settings or mod configs.                |
+|                          | `@snapshots`                                       | *Container only*                      | Stores snapshots for `@` and `@home`. Not snapshot-worthy itself.                                                    |
+|                          | (optional) `@var`                                  | Rarely, or exclude from snapshots     | Logs, caches, pacman package cache. Usually excluded to avoid bloat.                                                 |
+| **SSD (1.81 TB, fast)**  | `@games_fast`                                      | Rare / none                           | Steam games that can be redownloaded. Snapshot not useful.                                                           |
+|                          | `@games_modded`                                    | Before modding sessions               | Captures working state of modded installs (Skyrim, Fallout, etc.). Lets you revert instantly after bad mods/updates. |
+|                          | `@vms`                                             | Before big experiments                | VM images change rapidly. Snapshot before OS upgrades or major test changes. Consider disabling CoW for speed.       |
+|                          | (optional) `@projects`                             | As needed (weekly/during dev sprints) | Development projects/code/data. Snapshots can act as versioned backups alongside git.                                |
+| **SSHD (1.81 TB, bulk)** | `@games_bulk`                                      | None                                  | Bulk/less demanding games. Easily redownloadable. Snapshots waste space here.                                        |
+|                          | `@media`                                           | None                                  | Movies/music don’t need rollback. Better to just back up externally.                                                 |
+| **External (2 TB)**      | (NTFS/exFAT now)                                   | N/A until reformatted                 | Mount as is to copy data in. If reformatted to Btrfs later → use for backups (monthly snapshots).                    |
+
 
 ### Btrfs Mount Options Explained
 
