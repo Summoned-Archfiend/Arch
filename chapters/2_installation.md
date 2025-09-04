@@ -313,7 +313,96 @@ Set root password:
 passwd
 ```
 
-Now install your bootloader (GRUB or alternative) following the Arch Wiki.
+Now install your bootloader (GRUB or alternative).
+
+---
+
+## Bootloader Installation (GRUB on UEFI)
+
+At this point, we have a working base system with packages installed, a root password set, and the correct locales configured. The last major step before reboot is installing the bootloader.
+
+We will use **GRUB** with UEFI support.
+
+### 1) Install GRUB and EFI tools
+
+Inside the chroot environment, install the required packages:
+
+```
+pacman -S grub efibootmgr
+```
+
+* `grub` → the bootloader itself
+* `efibootmgr` → helper tool to manage UEFI boot entries
+
+> **Note**
+> If you see `bash: grub-install: command not found`, it means `grub` wasn’t installed yet. Run the command above to fix it.
+
+---
+
+### 2) Verify the EFI partition is mounted
+
+Before installing, confirm that your EFI System Partition (ESP) is mounted at `/boot/efi`:
+
+```
+findmnt /boot/efi
+```
+
+You should see it listed as `vfat`.
+If not, mount it manually (assuming ESP is `/dev/sda1`):
+
+```
+mount /dev/sda1 /boot/efi
+```
+
+---
+
+### 3) Install GRUB to the EFI directory
+
+Run the installation command:
+
+```
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
+```
+
+* `--target=x86_64-efi` → 64-bit UEFI firmware target
+* `--efi-directory=/boot/efi` → location where your EFI partition is mounted
+* `--bootloader-id=GRUB` → how the bootloader will appear in your firmware’s boot menu
+
+> **Common Issues**
+>
+> * **“cannot find EFI directory”** → ESP not mounted at `/boot/efi`. Mount it and retry.
+> * **“EFI variables are not supported”** → installer was booted in BIOS mode, not UEFI. Reboot ISO in UEFI mode.
+> * **“failed to get canonical path of ‘airootfs’”** → you ran this outside the chroot. Run `arch-chroot /mnt` first.
+
+---
+
+### 4) Generate GRUB configuration
+
+Finally, generate the GRUB configuration file:
+
+```
+grub-mkconfig -o /boot/grub/grub.cfg
+```
+
+This command scans for installed kernels, initramfs images, and other OS installs, then writes a `grub.cfg` used at boot.
+
+> **Note**
+> Because we installed `intel-ucode` earlier, GRUB will automatically detect and include the CPU microcode in the boot entries.
+
+---
+
+### 5) Done
+
+At this point, GRUB is installed. You can now exit the chroot, unmount all partitions, and reboot:
+
+```
+exit
+umount -R /mnt
+reboot
+```
+
+---
+
 
 ---
 
