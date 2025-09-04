@@ -1,3 +1,5 @@
+Please update my installation guide. Include an in-depth explanation of the commands used and the issues we have resolved along the way
+
 # Installation
 
 Congratulations, you mounted the `iso`, either via your `USB` or `VM` and you are now greeted with the `Bash` shell. First, in the `Arch` docs navigate to the `Wiki` page.
