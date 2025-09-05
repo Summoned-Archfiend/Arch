@@ -1,5 +1,3 @@
-Please update my installation guide. Include an in-depth explanation of the commands used and the issues we have resolved along the way
-
 # Installation
 
 Congratulations, you mounted the `iso`, either via your `USB` or `VM` and you are now greeted with the `Bash` shell. First, in the `Arch` docs navigate to the `Wiki` page.
@@ -168,6 +166,7 @@ If you created a swap partition initialise it with:
 
 ```
 mkswap /dev/sdX
+swapon /dev/sdX
 ```
 
 > **Note**
@@ -214,12 +213,32 @@ umount /mnt/home-temp
 Now mount the HOME subvolumes into the install tree:
 
 ```
-mkdir -p /mnt/home /mnt/home/projects /mnt/games_modded /mnt/vms
+mkdir -p /mnt/home /mnt/home/projects /mnt/home/games_modded /mnt/home/vms
 mount -o noatime,ssd,compress=zstd:3,subvol=@home         /dev/sda3 /mnt/home
 mount -o noatime,ssd,compress=zstd:3,subvol=@projects     /dev/sda3 /mnt/home/projects
-mount -o noatime,ssd,compress=zstd:3,subvol=@games_modded /dev/sda3 /mnt/games_modded
-mount -o noatime,ssd,compress=zstd:3,subvol=@vms          /dev/sda3 /mnt/vms
+mount -o noatime,ssd,compress:zstd:3,subvol=@games_modded /dev/sda3 /mnt/home/games_modded
+mount -o noatime,ssd,compress=zstd:3,subvol=@vms          /dev/sda3 /mnt/home/vms
 ```
+
+### 4) Mount the EFI System Partition (ESP)
+
+The EFI partition is required for UEFI boot. Create the directory inside your install tree and mount it:
+
+```
+mkdir -p /mnt/boot/efi
+mount /dev/sda1 /mnt/boot/efi
+```
+
+Verify:
+
+```
+findmnt -R /mnt
+```
+
+You should see `/`, `/.snapshots`, `/var`, `/home` (and its subvolumes), and `/boot/efi`. This ensures everything is ready before generating fstab.
+
+> **Common Issue**
+> If you mount to `/boot/efi` without the `/mnt` prefix, you are mounting into the ISO’s root, not the install tree. Always mount inside `/mnt`.
 
 ---
 
@@ -243,10 +262,16 @@ pacstrap /mnt \
   nodejs npm python python-pip
 ```
 
+If `genfstab` is not available, install it with:
+
+```
+pacman -Sy --needed arch-install-scripts
+```
+
 Generate `fstab` (ignoring any `/mnt/home-temp` leftovers):
 
 ```
-genfstab -U /mnt | sed '/home-temp/d' >> /mnt/etc/fstab
+genfstab -U /mnt | sed '/home-temp/d' > /mnt/etc/fstab
 ```
 
 ---
@@ -400,9 +425,6 @@ exit
 umount -R /mnt
 reboot
 ```
-
----
-
 
 ---
 
