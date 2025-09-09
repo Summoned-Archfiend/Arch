@@ -444,6 +444,162 @@ umount -R /mnt
 reboot
 ```
 
+## Create a User Account
+
+By default, only the `root` account exists after installation. To log into your desktop environment later (GNOME, KDE, etc.), you need a regular user account.
+
+Create a user (replace `<username>` with your choice):
+
+```bash
+useradd -m -G wheel -s /bin/bash <username>
+passwd <username>
+```
+
+* `-m` → creates the user’s home directory under `/home/<username>`
+* `-G wheel` → adds the user to the `wheel` group (needed for sudo/admin rights)
+* `-s /bin/bash` → sets Bash as the default shell
+
+Enable sudo access for the `wheel` group:
+
+```bash
+EDITOR=vi visudo
+```
+
+Uncomment the line:
+
+```
+%wheel ALL=(ALL) ALL
+```
+
+This allows your new user to perform administrative tasks with `sudo`.
+
+## Locale and Keyboard Configuration
+
+Before installing a desktop environment or display manager, you should configure the system locale and keyboard layout. This ensures your greeter (SDDM/GDM) and applications default to the correct language and keyboard mapping.
+
+### 1. Configure Locale
+
+Edit the locale configuration file and uncomment the locale you wish to use (for example, `en_GB.UTF-8 UTF-8`):
+
+```bash
+vi /etc/locale.gen
+```
+
+Uncomment:
+
+```
+en_GB.UTF-8 UTF-8
+en_US.UTF-8 UTF-8   # optional fallback
+```
+
+Generate the locales:
+
+```bash
+locale-gen
+```
+
+Set the default system locale:
+
+```bash
+echo "LANG=en_GB.UTF-8" > /etc/locale.conf
+```
+
+Verify with:
+
+```bash
+locale
+```
+
+### 2. Configure Console Keymap
+
+Set the keymap for the virtual console (TTY):
+
+```bash
+echo "KEYMAP=uk" > /etc/vconsole.conf
+```
+
+Apply it immediately with:
+
+```bash
+loadkeys uk
+```
+
+Check mapping with:
+
+```bash
+dumpkeys | grep -A1 "^keycode 3"
+```
+
+For UK layout you should see `two at quotedbl`, meaning `Shift+2 = "`.
+
+### 3. Configure X11 Keyboard Layout
+
+To ensure your display manager and graphical environment use the correct keyboard layout:
+
+```bash
+localectl set-x11-keymap gb
+```
+
+This generates `/etc/X11/xorg.conf.d/00-keyboard.conf` with:
+
+```ini
+Section "InputClass"
+    Identifier "system-keyboard"
+    MatchIsKeyboard "on"
+    Option "XkbLayout" "gb"
+EndSection
+```
+
+Check with:
+
+```bash
+setxkbmap -query
+```
+
+Expected output:
+
+```
+layout: gb
+```
+
+### 4. SDDM/GDM Keyboard Override (if needed)
+
+If your greeter still defaults to US, force it in SDDM:
+
+Create `/etc/sddm.conf.d/keyboard.conf`:
+
+```ini
+[X11]
+KeyboardLayout=gb
+```
+
+Restart SDDM:
+
+```bash
+systemctl restart sddm
+```
+
+For GDM, layouts are selected at login from the gear menu. Ensure `gb` is listed under `/usr/share/X11/xkb/rules/base.lst`.
+
+### Reference
+
+This process is described in the official Arch Wiki:
+
+* [Installation Guide → Configure the system → Locale](https://wiki.archlinux.org/title/Installation_guide#Locale)
+* [Arch Wiki: Locale](https://wiki.archlinux.org/title/Locale)
+* [Arch Wiki: Xorg/Keyboard configuration](https://wiki.archlinux.org/title/Xorg/Keyboard_configuration)
+
 ---
 
-\| [← Previous](../chapters/1_virtual_machine.md) | [Next →]() |
+> **Common Mismatch (US vs UK)**
+>
+> Symptom: `Shift+2` = `@` instead of `"`.
+>
+> *Cause*: System is still using US layout.
+>
+> *Fix*: Confirm `dumpkeys` (for TTY) and `setxkbmap -query` (for X11) both show `gb`. Apply corrections with `loadkeys uk` and `localectl set-x11-keymap gb`. Restart SDDM/GDM if required.
+
+
+---
+
+\| [← Previous](../chapters/1_virtual_machine.md) | [Next →](../chapters/3_desktop_environment.md) |
