@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# wacom-watch: Wacom Cintiq mapping supervisor.
+#
+# Three duties:
+#   1. Apply wacom-remap once at startup.
+#   2. Listen for X RandR events (layout change, plug or unplug, KDE
+#      Edit Mode) and re-apply on each, debounced by one second.
+#   3. Poll the stylus Coordinate Transformation Matrix every 5 seconds;
+#      if it has been reset to the identity matrix by some non-RandR
+#      actor (KDE's wacomtablet daemon, libinput hotplug, an app grabbing
+#      the device, etc.) re-apply. This is the belt-and-braces layer.
+#
+# Started by systemd (see wacom-watch.service alongside this script).
+#
+# Log: ~/.cache/wacom-watch.log
+# Also visible via: journalctl --user -u wacom-watch.service
+
+set -uo pipefail
+
+LOG=~/.cache/wacom-watch.log
+exec >>"$LOG" 2>&1
+
+REMAP=~/.local/bin/wacom-remap
+STYLUS_NAME="Wacom Co.,Ltd. Wacom Cintiq 16 Stylus stylus"
+POLL_INTERVAL=5
+IDENTITY_CTM="1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000"
+
+echo "[$(date)] wacom-watch starting (pid $$)"
+
+"$REMAP" || true
+
+randr_listener() {
+  local last_run=0 now
+  xev -root -event randr 2>/dev/null | while read -r line; do
+    case "$line" in
+      *RRScreenChangeNotify*|*RRCrtcChangeNotify*|*RROutputChangeNotify*)
+        now=$(date +%s)
+        if [ $((now - last_run)) -ge 1 ]; then
+          sleep 1
+          echo "[$(date)] RandR event -> remap"
+          "$REMAP" || true
+          last_run=$(date +%s)
+        fi
+        ;;
+    esac
+  done
+}
+
+ctm_watchdog() {
+  local ctm
+  while sleep "$POLL_INTERVAL"; do
+    ctm=$(xinput list-props "$STYLUS_NAME" 2>/dev/null \
+          | awk -F'\t' '/Coordinate Transformation Matrix/ { print $NF }')
+    [ -z "$ctm" ] && continue
+    if [ "$ctm" = "$IDENTITY_CTM" ]; then
+      echo "[$(date)] CTM watchdog: identity matrix detected -> remap"
+      "$REMAP" || true
+    fi
+  done
+}
+
+randr_listener &
+RANDR_PID=$!
+ctm_watchdog &
+WATCHDOG_PID=$!
+
+trap 'kill $RANDR_PID $WATCHDOG_PID 2>/dev/null; exit' EXIT INT TERM
+
+wait -n
+echo "[$(date)] a child exited; terminating so systemd can restart us"
+exit 1

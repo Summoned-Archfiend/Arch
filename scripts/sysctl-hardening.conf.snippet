@@ -1,0 +1,71 @@
+# Destination: /etc/sysctl.d/99-hardening.conf
+# Apply:
+#   sudo install -Dm644 sysctl-hardening.conf.snippet /etc/sysctl.d/99-hardening.conf
+#   sudo sysctl --system
+#
+# See chapter 11 for the reasoning behind each value.
+
+# --- Information-leak hardening ---
+# 0 (default on some kernels) leaks kernel pointers in /proc, dmesg,
+# kallsyms. Common recon step before a local privesc. 2 hides them
+# from every non-root context.
+kernel.kptr_restrict = 2
+
+# --- Privilege-escalation surface reduction ---
+# kexec can load and boot an arbitrary kernel image at runtime. A
+# workstation never legitimately needs this; locking it down removes
+# a known rootkit primitive.
+kernel.kexec_load_disabled = 1
+
+# --- Core dump hygiene ---
+# 0 = SUID processes never write core dumps. Prevents secrets in
+# memory of SUID binaries (sudo, mount, etc.) landing on disk on
+# crash.
+fs.suid_dumpable = 0
+
+# --- BPF JIT hardening (Spectre v2-style mitigations) ---
+# 2 = enable JIT hardening for all users. Pairs with
+# kernel.unprivileged_bpf_disabled (usually already 2 on Arch).
+net.core.bpf_jit_harden = 2
+
+# --- Network hardening ---
+# Log packets that shouldn't be possible (spoofed source on wrong
+# interface). Low volume on a workstation, useful for spotting
+# scanning or misconfiguration.
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.conf.default.log_martians = 1
+
+# rp_filter on 'all' is usually 1 by default; also apply to 'default'
+# so new interfaces (Docker, VPN tunnels) inherit it.
+net.ipv4.conf.default.rp_filter = 1
+
+# Ignore broadcast pings (Smurf-attack amplification protection).
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+
+# Ignore bogus ICMP error responses (log spam + minor DoS protection).
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+
+# TIME-WAIT assassination protection (RFC 1337).
+net.ipv4.tcp_rfc1337 = 1
+
+# Source routing: never accept. Antique feature, only used in
+# attacks now.
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv6.conf.all.accept_source_route = 0
+net.ipv6.conf.default.accept_source_route = 0
+
+# ICMP redirects on IPv6 (v4 already covered by Arch defaults).
+# Don't accept rerouting instructions from the network.
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+
+# --- Settings deliberately NOT changed ---
+# kernel.unprivileged_userns_clone : LEFT AT 1
+#   Docker (rootless), Podman, Flatpak, bwrap, Chromium sandbox all
+#   need this. Locking it down breaks daily tooling.
+#
+# kernel.yama.ptrace_scope : LEFT AT 1
+#   Raising to 2 breaks gdb/strace/lldb on your own processes.
+#   The default 1 already blocks cross-user ptrace, which is the
+#   main exploit class.

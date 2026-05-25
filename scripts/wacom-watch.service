@@ -1,0 +1,15 @@
+[Unit]
+Description=Wacom Cintiq mapping watcher (RandR events + CTM watchdog)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/wacom-watch
+Restart=always
+RestartSec=5
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Install]
+WantedBy=graphical-session.target

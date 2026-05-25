@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Map a Wacom Cintiq 16 (2025) stylus, eraser, and pad to its current
+# output geometry. Re-detects the output from xrandr on every run, so it
+# follows layout changes.
+#
+# Identification strategy: match xrandr's "<W>mm x <H>mm" physical-size
+# column against the Cintiq's panel size (345mm x 216mm). This is more
+# robust than trusting the connector name, which can change if you replug
+# into a different port. It also avoids the `xsetwacom ... MapToOutput
+# <name>` failure mode that hits on NVIDIA's proprietary driver, where
+# xsetwacom often cannot resolve the RandR output by name and bails with
+# "Unable to find an output".
+
+set -euo pipefail
+
+PANEL_SIZE="345mm x 216mm"
+DEVICE_PREFIX="Wacom Co.,Ltd. Wacom Cintiq 16 Stylus"
+
+geom=$(xrandr --query | awk -v size="$PANEL_SIZE" '
+  / connected/ && index($0, size) {
+    for (i=3; i<=NF; i++) {
+      if ($i ~ /^[0-9]+x[0-9]+\+[-0-9]+\+[-0-9]+$/) { print $i; exit }
+    }
+  }
+')
+
+if [ -z "$geom" ]; then
+  echo "wacom-remap: no connected output matches panel size '$PANEL_SIZE'" >&2
+  exit 1
+fi
+
+for sub in stylus eraser pad; do
+  xsetwacom set "$DEVICE_PREFIX $sub" MapToOutput "$geom"
+done
+
+echo "wacom-remap: mapped Cintiq devices to $geom"

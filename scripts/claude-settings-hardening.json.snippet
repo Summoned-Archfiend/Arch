@@ -1,0 +1,77 @@
+// Reference deny-list for an AI coding assistant's permissions file.
+//
+// The syntax below is from one specific assistant (Claude Code, in
+// ~/.claude/settings.json). Other agents have similar config files
+// with different rule syntax, but the *paths* are universal. Every
+// Linux desktop has the same backdoor surfaces, so adapt the patterns
+// rather than copying them verbatim.
+//
+// Replace YOUR_USER with your actual login name on the lines below.
+// On Arch, $HOME is /home/<your-user>.
+//
+// See chapter 11, section 7 for the threat model these rules address.
+
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [],
+    "deny": [
+      // --- Read denies: credential stores and secrets ---
+      "Bash(curl *)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)",
+      "Read(/home/YOUR_USER/.ssh/**)",
+      "Read(/home/YOUR_USER/.gnupg/**)",
+      "Read(/home/YOUR_USER/.aws/credentials)",
+      "Read(/home/YOUR_USER/.config/gh/hosts.yml)",
+      "Read(/home/YOUR_USER/.netrc)",
+      "Read(/home/YOUR_USER/.password-store/**)",
+      "Read(/home/YOUR_USER/**/.env)",
+      "Read(/home/YOUR_USER/**/.env.*)",
+
+      // --- Write denies: persistence / backdoor surfaces ---
+      "Write(/home/YOUR_USER/.ssh/**)",
+      "Edit(/home/YOUR_USER/.ssh/**)",
+      "Write(/home/YOUR_USER/.bashrc)",
+      "Edit(/home/YOUR_USER/.bashrc)",
+      "Write(/home/YOUR_USER/.bash_profile)",
+      "Edit(/home/YOUR_USER/.bash_profile)",
+      "Write(/home/YOUR_USER/.zshrc)",
+      "Edit(/home/YOUR_USER/.zshrc)",
+      "Write(/home/YOUR_USER/.profile)",
+      "Edit(/home/YOUR_USER/.profile)",
+      "Write(/home/YOUR_USER/.config/autostart/**)",
+      "Edit(/home/YOUR_USER/.config/autostart/**)",
+      "Write(/home/YOUR_USER/.config/systemd/user/**)",
+      "Edit(/home/YOUR_USER/.config/systemd/user/**)",
+      // KDE-specific startup hook; equivalent paths exist on other DEs.
+      "Write(/home/YOUR_USER/.config/plasma-workspace/env/**)",
+      "Edit(/home/YOUR_USER/.config/plasma-workspace/env/**)",
+
+      // --- Bash denies: alternative exfil / persistence channels ---
+      "Bash(wget *)",
+      "Bash(nc *)",
+      "Bash(ncat *)",
+      "Bash(socat *)",
+      // SSH out to anywhere is a strong exfil channel; deny by
+      // default and approve case-by-case.
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(sftp *)",
+      "Bash(rsync *:*)",         // remote rsync only; local rsync still works
+      // Privilege escalation must always be explicit.
+      "Bash(sudo *)",
+      "Bash(su *)",
+      "Bash(doas *)",
+      // Mass deletion footguns.
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~*)",
+      "Bash(rm -rf $HOME*)",
+      // Inline credential helpers / one-liners often used in attacks.
+      "Bash(*base64 -d*|*sh)",
+      "Bash(*python -c *)",
+      "Bash(*perl -e *)"
+    ]
+  }
+}

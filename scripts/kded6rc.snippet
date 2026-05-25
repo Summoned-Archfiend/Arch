@@ -1,0 +1,7 @@
+# Snippet to append to ~/.config/kded6rc. Disables KDE's wacomtablet
+# kded module, which writes its own Coordinate Transformation Matrix on
+# activation and races against xsetwacom. Only needed if you manage the
+# tablet via xsetwacom and do not use System Settings -> Tablet.
+
+[Module-wacomtablet]
+autoload=false

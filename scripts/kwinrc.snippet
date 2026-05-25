@@ -1,0 +1,11 @@
+# Snippet to merge into ~/.config/kwinrc. Pins window placement to the
+# focused screen rather than the screen-under-cursor. Useful when a
+# Wacom pen lives on a non-primary screen and you do not want new
+# windows (or app dialogs) to follow the pen cursor.
+#
+# After editing kwinrc, reload KWin without logging out:
+#   qdbus6 org.kde.KWin /KWin reconfigure
+
+[Windows]
+Placement=Centered
+ActiveMouseScreen=false

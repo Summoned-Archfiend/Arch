@@ -1,0 +1,35 @@
+# Destination: append to /etc/ufw/after.rules, BEFORE the final
+# "COMMIT" line of the *filter table. Do NOT duplicate the *filter or
+# COMMIT markers that already exist in the file. Paste only the
+# block between the BEGIN / END markers below.
+#
+# Apply:
+#   sudo cp /etc/ufw/after.rules /etc/ufw/after.rules.bak
+#   sudoedit /etc/ufw/after.rules
+#   # paste the block before the final *filter COMMIT
+#   sudo ufw reload
+#
+# Verify:
+#   sudo iptables -L DOCKER-USER -v
+#
+# See chapter 11, section 4 for what this solves.
+
+# --- BEGIN UFW + Docker reconciliation -------------------------------------
+
+:DOCKER-USER - [0:0]
+
+# 1. Established / related: don't break in-flight container connections.
+-A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+
+# 2. Private networks (your LAN + Docker bridges).
+-A DOCKER-USER -s 192.168.0.0/16 -j RETURN
+-A DOCKER-USER -s 172.16.0.0/12  -j RETURN
+-A DOCKER-USER -s 10.0.0.0/8     -j RETURN
+
+# 3. Tailnet: published container ports reachable when remote.
+-A DOCKER-USER -s 100.64.0.0/10  -j RETURN
+
+# 4. Everything else: drop.
+-A DOCKER-USER -j DROP
+
+# --- END UFW + Docker reconciliation ---------------------------------------

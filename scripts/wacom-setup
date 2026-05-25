@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# wacom-setup: bootstrap or repair the entire Wacom Cintiq pen pipeline.
+#
+# Idempotent. Run after a fresh OS install, after a destructive config
+# change, or if you ever suspect the pen automation has been damaged.
+#
+# Will:
+#   1. Verify prerequisites (xrandr, xsetwacom, xinput, xev, qdbus6,
+#      systemctl, awk).
+#   2. Detect the Cintiq's xrandr output by physical size (345mm x 216mm).
+#   3. (Re)install ~/.local/bin/wacom-remap.
+#   4. (Re)install ~/.local/bin/wacom-watch with the CTM watchdog.
+#   5. Disable KDE's wacomtablet kded module, the silent racer.
+#   6. Retire any legacy wacom-cintiq-mapping.{path,service} units.
+#   7. Retire any legacy ~/.config/autostart/wacom-watch.desktop.
+#   8. Install and enable ~/.config/systemd/user/wacom-watch.service.
+#   9. Run wacom-remap once to apply the mapping immediately.
+#  10. Self-test: force the CTM to identity, wait one polling window,
+#      confirm the watchdog recovered.
+#
+# Logs to stderr. Exits non-zero on any unrecoverable failure.
+
+set -euo pipefail
+
+PANEL_SIZE="345mm x 216mm"
+STYLUS_NAME="Wacom Co.,Ltd. Wacom Cintiq 16 Stylus stylus"
+IDENTITY_CTM="1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000"
+
+step()  { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+ok()    { printf '   ok\n' >&2; }
+info()  { printf '   %s\n' "$*" >&2; }
+warn()  { printf '   warn: %s\n' "$*" >&2; }
+die()   { printf '   FAIL: %s\n' "$*" >&2; exit 1; }
+
+# ----- 1. Prerequisites -----
+step "checking prerequisites"
+for cmd in xrandr xsetwacom xinput xev qdbus6 systemctl awk; do
+  command -v "$cmd" >/dev/null || die "missing required command: $cmd"
+done
+ok
+
+# ----- 2. Cintiq detection -----
+step "detecting Cintiq output via physical size ($PANEL_SIZE)"
+GEOM=$(xrandr --query | awk -v size="$PANEL_SIZE" '
+  / connected/ && index($0, size) {
+    for (i=3; i<=NF; i++) {
+      if ($i ~ /^[0-9]+x[0-9]+\+[-0-9]+\+[-0-9]+$/) { print $i; exit }
+    }
+  }
+')
+[ -n "$GEOM" ] || die "no connected output matches '$PANEL_SIZE'. Plug in the Cintiq and re-run."
+info "found Cintiq at $GEOM"
+ok
+
+# ----- 3. Install wacom-remap -----
+step "installing ~/.local/bin/wacom-remap"
+mkdir -p ~/.local/bin
+cat > ~/.local/bin/wacom-remap <<'REMAP_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PANEL_SIZE="345mm x 216mm"
+DEVICE_PREFIX="Wacom Co.,Ltd. Wacom Cintiq 16 Stylus"
+
+geom=$(xrandr --query | awk -v size="$PANEL_SIZE" '
+  / connected/ && index($0, size) {
+    for (i=3; i<=NF; i++) {
+      if ($i ~ /^[0-9]+x[0-9]+\+[-0-9]+\+[-0-9]+$/) { print $i; exit }
+    }
+  }
+')
+
+if [ -z "$geom" ]; then
+  echo "wacom-remap: no connected output matches panel size '$PANEL_SIZE'" >&2
+  exit 1
+fi
+
+for sub in stylus eraser pad; do
+  xsetwacom set "$DEVICE_PREFIX $sub" MapToOutput "$geom"
+done
+
+echo "wacom-remap: mapped Cintiq devices to $geom"
+REMAP_EOF
+chmod +x ~/.local/bin/wacom-remap
+ok
+
+# ----- 4. Install wacom-watch -----
+step "installing ~/.local/bin/wacom-watch (with CTM watchdog)"
+cat > ~/.local/bin/wacom-watch <<'WATCH_EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+
+LOG=~/.cache/wacom-watch.log
+exec >>"$LOG" 2>&1
+
+REMAP=~/.local/bin/wacom-remap
+STYLUS_NAME="Wacom Co.,Ltd. Wacom Cintiq 16 Stylus stylus"
+POLL_INTERVAL=5
+IDENTITY_CTM="1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000"
+
+echo "[$(date)] wacom-watch starting (pid $$)"
+
+"$REMAP" || true
+
+randr_listener() {
+  local last_run=0 now
+  xev -root -event randr 2>/dev/null | while read -r line; do
+    case "$line" in
+      *RRScreenChangeNotify*|*RRCrtcChangeNotify*|*RROutputChangeNotify*)
+        now=$(date +%s)
+        if [ $((now - last_run)) -ge 1 ]; then
+          sleep 1
+          echo "[$(date)] RandR event -> remap"
+          "$REMAP" || true
+          last_run=$(date +%s)
+        fi
+        ;;
+    esac
+  done
+}
+
+ctm_watchdog() {
+  local ctm
+  while sleep "$POLL_INTERVAL"; do
+    ctm=$(xinput list-props "$STYLUS_NAME" 2>/dev/null \
+          | awk -F'\t' '/Coordinate Transformation Matrix/ { print $NF }')
+    [ -z "$ctm" ] && continue
+    if [ "$ctm" = "$IDENTITY_CTM" ]; then
+      echo "[$(date)] CTM watchdog: identity matrix detected -> remap"
+      "$REMAP" || true
+    fi
+  done
+}
+
+randr_listener &
+RANDR_PID=$!
+ctm_watchdog &
+WATCHDOG_PID=$!
+
+trap 'kill $RANDR_PID $WATCHDOG_PID 2>/dev/null; exit' EXIT INT TERM
+
+wait -n
+echo "[$(date)] a child exited; terminating so systemd can restart us"
+exit 1
+WATCH_EOF
+chmod +x ~/.local/bin/wacom-watch
+ok
+
+# ----- 5. Disable kded wacomtablet -----
+step "disabling kded6 wacomtablet module"
+mkdir -p ~/.config
+if ! grep -q '^\[Module-wacomtablet\]' ~/.config/kded6rc 2>/dev/null; then
+  printf '[Module-wacomtablet]\nautoload=false\n' >> ~/.config/kded6rc
+  info "wrote autoload=false to ~/.config/kded6rc"
+else
+  info "kded6rc already has [Module-wacomtablet] section, left as-is"
+fi
+if qdbus6 org.kde.kded6 /kded loadedModules 2>/dev/null | grep -q '^wacomtablet$'; then
+  qdbus6 org.kde.kded6 /kded unloadModule wacomtablet >/dev/null 2>&1 \
+    || warn "could not unload running module"
+  info "unloaded running wacomtablet module"
+fi
+ok
+
+# ----- 6. Retire legacy wacom-cintiq-mapping systemd units -----
+step "retiring legacy wacom-cintiq-mapping units (if present)"
+RETIRED_ANY=0
+for unit in wacom-cintiq-mapping.path wacom-cintiq-mapping.service; do
+  if systemctl --user cat "$unit" >/dev/null 2>&1; then
+    systemctl --user disable --now "$unit" >/dev/null 2>&1 || true
+    systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+    info "disabled $unit"
+    RETIRED_ANY=1
+  fi
+done
+[ "$RETIRED_ANY" -eq 0 ] && info "no legacy units found"
+ok
+
+# ----- 7. Retire legacy autostart .desktop -----
+step "retiring legacy autostart entry (if present)"
+if [ -f ~/.config/autostart/wacom-watch.desktop ]; then
+  TS=$(date +%F)
+  mv ~/.config/autostart/wacom-watch.desktop \
+     ~/.config/autostart/wacom-watch.desktop.retired-"$TS"
+  info "renamed to wacom-watch.desktop.retired-$TS"
+else
+  info "no autostart entry found"
+fi
+ok
+
+# ----- 8. Install supervised systemd unit -----
+step "installing ~/.config/systemd/user/wacom-watch.service"
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/wacom-watch.service <<'UNIT_EOF'
+[Unit]
+Description=Wacom Cintiq mapping watcher (RandR events + CTM watchdog)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/wacom-watch
+Restart=always
+RestartSec=5
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Install]
+WantedBy=graphical-session.target
+UNIT_EOF
+systemctl --user daemon-reload
+systemctl --user enable wacom-watch.service >/dev/null 2>&1
+if systemctl --user is-active --quiet wacom-watch.service; then
+  systemctl --user restart wacom-watch.service
+  info "restarted (already running)"
+else
+  systemctl --user start wacom-watch.service
+  info "started"
+fi
+ok
+
+# ----- 9. Initial mapping -----
+step "applying initial mapping"
+~/.local/bin/wacom-remap
+ok
+
+# ----- 10. Self-test the watchdog -----
+step "self-test: forcing CTM to identity, waiting 8s for watchdog"
+xinput set-prop "$STYLUS_NAME" "Coordinate Transformation Matrix" \
+  1 0 0 0 1 0 0 0 1
+sleep 8
+CTM_AFTER=$(xinput list-props "$STYLUS_NAME" 2>/dev/null \
+  | awk -F'\t' '/Coordinate Transformation Matrix/ { print $NF }')
+if [ "$CTM_AFTER" = "$IDENTITY_CTM" ]; then
+  warn "watchdog did NOT recover within 8s. Check:"
+  warn "  journalctl --user -u wacom-watch.service -n 20"
+  warn "  tail ~/.cache/wacom-watch.log"
+  exit 1
+fi
+info "watchdog recovered: $CTM_AFTER"
+ok
+
+printf '\nwacom-setup: done.\n' >&2

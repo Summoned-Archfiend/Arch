@@ -1,6 +1,7 @@
 # Installation
 
-Congratulations, you mounted the `iso`, either via your `USB` or `VM` and you are now greeted with the `Bash` shell. First, in the `Arch` docs navigate to the `Wiki` page.
+Congratulations, you mounted the `iso` (either via your `USB` or `VM`) and you are now greeted with the
+`Bash` shell. First, in the `Arch` docs navigate to the `Wiki` page.
 
 ![Shell](../media/Arch_iso.png)
 
@@ -8,7 +9,9 @@ Congratulations, you mounted the `iso`, either via your `USB` or `VM` and you ar
 
 ## Keyboard Localisation
 
-The first thing you will likely notice is some of your keyboard keys not aligning with what is entered in the terminal. We need to find your `keymap` in the system. This will be the map for your specific keyboard localisation. You can find all included `keymaps` via the command:
+The first thing you will likely notice is some of your keyboard keys not aligning with what is entered
+in the terminal. We need to find your `keymap` in the system. This will be the map for your specific
+keyboard localisation. You can find all included `keymaps` via the command:
 
 ```
 localectl list-keymaps
@@ -20,30 +23,34 @@ Find the corresponding `keymap` for your keyboard (in my case it is `uk`) and re
 loadkeys <keymap>
 ```
 
-You can also set fonts. To check available console fonts, `ls` the files inside `/usr/share/kbd/consolefonts`. For example:
+You can also set fonts. To check available console fonts, `ls` the files inside
+`/usr/share/kbd/consolefonts`. For example:
 
 ```
 setfont ter-u18b
 ```
 
 > **Note**
-> If `setfont ter-u18b` fails, list available fonts with `ls /usr/share/kbd/consolefonts` and choose one that exists.
+> If `setfont ter-u18b` fails, list available fonts with `ls /usr/share/kbd/consolefonts` and choose
+> one that exists.
 
 ---
 
-## Verify boot mode
+## Verify Boot Mode
 
-If you already know which boot mode you are in, for instance `UEFI` vs `BIOS`, you can skip this step. Otherwise run:
+If you already know which boot mode you are in, for instance `UEFI` vs `BIOS`, you can skip this step.
+Otherwise run:
 
 ```
 cat /sys/firmware/efi/fw_platform_size
 ```
 
-You should see `64` or `32` if it booted in UEFI mode. If you see nothing it booted in BIOS mode, and you need to refer to your motherboard manual to enable UEFI.
+You should see `64` or `32` if it booted in UEFI mode. If you see nothing, it booted in BIOS mode and
+you need to refer to your motherboard manual to enable UEFI.
 
 ---
 
-## Connect to the internet
+## Connect to the Internet
 
 Ensure your network interface is available:
 
@@ -92,21 +99,25 @@ exit
 For full details, see the [Iwd docs](https://wiki.archlinux.org/title/Iwd#iwctl).
 
 > **Note**
-> If DNS fails, try `ping 1.1.1.1`. If that works, you have DNS resolution issues. Check `resolvectl status`.
+> If DNS fails, try `ping 1.1.1.1`. If that works, you have DNS resolution issues. Check
+> `resolvectl status`.
 
 ---
 
 ## System Clock
 
-`systemd-timesyncd` should be enabled by default. You can check the time with `timedatectl`. For now, only basic verification is needed, as permanent configuration will happen later inside the installed system.
+`systemd-timesyncd` should be enabled by default. You can check the time with `timedatectl`. For now,
+only basic verification is needed, as permanent configuration will happen later inside the installed
+system.
 
 ![UTC](../media/UTC.png)
 
 ---
 
-## Partition the disks
+## Partition the Disks
 
-Use `fdisk -l` to see your disks. The `loop` device is the ISO, your target drive is usually `/dev/sda`.
+Use `fdisk -l` to see your disks. The `loop` device is the ISO, your target drive is usually
+`/dev/sda`.
 
 Partition alignment rules:
 
@@ -131,18 +142,19 @@ Recommended sizes:
 
 | Partition        | Mount Point | Size Recommendation                       | Required / Recommended | Notes                                           |
 | ---------------- | ----------- | ----------------------------------------- | ---------------------- | ----------------------------------------------- |
-| Root             | `/`         | 30–50 GiB typical with a DE               | Required               | Contains the operating system and all software. |
+| Root             | `/`         | 30 to 50 GiB typical with a DE            | Required               | Contains the operating system and all software. |
 | EFI System Part. | `/boot/efi` | 512 MiB (FAT32)                           | Required (UEFI only)   | Needed for UEFI bootloaders.                    |
-| Swap             | N/A         | Equal to RAM if hibernating, else 1–4 GiB | Recommended            | Required for hibernation, optional otherwise.   |
+| Swap             | N/A         | Equal to RAM if hibernating, else 1 to 4 GiB | Recommended         | Required for hibernation, optional otherwise.   |
 
 > **Note**
-> If you plan on multiple desktop environments or lots of packages, allocate 80–100 GiB to root for comfort.
+> If you plan on multiple desktop environments or lots of packages, allocate 80 to 100 GiB to root for
+> comfort.
 
-If you create a swap partition, you will initialise it later with `mkswap` and enable with `swapon`.
+If you create a swap partition, you will initialise it later with `mkswap` and enable it with `swapon`.
 
 ---
 
-## Formatting the partitions
+## Formatting the Partitions
 
 Format the EFI partition as FAT32:
 
@@ -162,7 +174,7 @@ Check with:
 lsblk -f
 ```
 
-If you created a swap partition initialise it with:
+If you created a swap partition, initialise it with:
 
 ```
 mkswap /dev/sdX
@@ -170,11 +182,12 @@ swapon /dev/sdX
 ```
 
 > **Note**
-> Labels help produce a cleaner `fstab`. We label root as `ROOT` which is useful later when identifying snapshots.
+> Labels help produce a cleaner `fstab`. We label root as `ROOT` which is useful later when identifying
+> snapshots.
 
 ---
 
-## Mounting the filesystems
+## Mounting the Filesystems
 
 ### 1) Mount root temporarily and create subvolumes
 
@@ -216,13 +229,14 @@ Now mount the HOME subvolumes into the install tree:
 mkdir -p /mnt/home /mnt/home/projects /mnt/home/games_modded /mnt/home/vms
 mount -o noatime,ssd,compress=zstd:3,subvol=@home         /dev/sda3 /mnt/home
 mount -o noatime,ssd,compress=zstd:3,subvol=@projects     /dev/sda3 /mnt/home/projects
-mount -o noatime,ssd,compress:zstd:3,subvol=@games_modded /dev/sda3 /mnt/home/games_modded
+mount -o noatime,ssd,compress=zstd:3,subvol=@games_modded /dev/sda3 /mnt/home/games_modded
 mount -o noatime,ssd,compress=zstd:3,subvol=@vms          /dev/sda3 /mnt/home/vms
 ```
 
 ### 4) Mount the EFI System Partition (ESP)
 
-The EFI partition is required for UEFI boot. Create the directory inside your install tree and mount it:
+The EFI partition is required for UEFI boot. Create the directory inside your install tree and mount
+it:
 
 ```
 mkdir -p /mnt/boot/efi
@@ -235,16 +249,19 @@ Verify:
 findmnt -R /mnt
 ```
 
-You should see `/`, `/.snapshots`, `/var`, `/home` (and its subvolumes), and `/boot/efi`. This ensures everything is ready before generating fstab.
+You should see `/`, `/.snapshots`, `/var`, `/home` (and its subvolumes), and `/boot/efi`. This ensures
+everything is ready before generating fstab.
 
 > **Common Issue**
-> If you mount to `/boot/efi` without the `/mnt` prefix, you are mounting into the ISO’s root, not the install tree. Always mount inside `/mnt`.
+> If you mount to `/boot/efi` without the `/mnt` prefix, you are mounting into the ISO's root, not
+> the install tree. Always mount inside `/mnt`.
 
 ---
 
-## Install packages
+## Install Packages
 
-Install the base system and extras:
+Install the base system and extras. Adjust the hardware-specific lines
+to match your machine (see notes after the command):
 
 ```
 pacstrap /mnt \
@@ -261,6 +278,18 @@ pacstrap /mnt \
   openrgb liquidctl \
   nodejs npm python python-pip
 ```
+
+Hardware-specific packages in the list above:
+
+* `intel-ucode` is for Intel CPUs. Use `amd-ucode` instead if you have
+  an AMD CPU.
+* `nvidia nvidia-utils nvidia-settings` are for NVIDIA GPUs. Drop these
+  on AMD (use `mesa` and `vulkan-radeon`) or Intel-only graphics (use
+  `mesa` and `vulkan-intel`).
+* `openrgb liquidctl` are only useful if you have RGB peripherals and
+  a liquid cooler. Drop them otherwise.
+* `nodejs npm python python-pip` are developer toolchains. Drop them
+  if you do not write code on this machine.
 
 If `genfstab` is not available, install it with:
 
@@ -313,10 +342,23 @@ Edit `/etc/locale.gen` and uncomment the UTF-8 locales you need:
 vi /etc/locale.gen
 ```
 
-Generate locales:
+Uncomment (adjust to your locale):
+
+```
+en_GB.UTF-8 UTF-8
+en_US.UTF-8 UTF-8   # optional fallback
+```
+
+Generate the locales:
 
 ```
 locale-gen
+```
+
+Set the default system locale:
+
+```
+echo "LANG=en_GB.UTF-8" > /etc/locale.conf
 ```
 
 Set keymap and font in `/etc/vconsole.conf`:
@@ -338,13 +380,14 @@ Set root password:
 passwd
 ```
 
-Now install your bootloader (GRUB or alternative).
+Now install your bootloader.
 
 ---
 
 ## Bootloader Installation (GRUB on UEFI)
 
-At this point, we have a working base system with packages installed, a root password set, and the correct locales configured. The last major step before reboot is installing the bootloader.
+At this point we have a working base system with packages installed, a root password set, and the
+correct locales configured. The last major step before reboot is installing the bootloader.
 
 We will use **GRUB** with UEFI support.
 
@@ -356,13 +399,12 @@ Inside the chroot environment, install the required packages:
 pacman -S grub efibootmgr
 ```
 
-* `grub` → the bootloader itself
-* `efibootmgr` → helper tool to manage UEFI boot entries
+* `grub` is the bootloader itself
+* `efibootmgr` is a helper tool to manage UEFI boot entries
 
 > **Note**
-> If you see `bash: grub-install: command not found`, it means `grub` wasn’t installed yet. Run the command above to fix it.
-
----
+> If you see `bash: grub-install: command not found`, it means `grub` wasn't installed yet. Run the
+> command above to fix it.
 
 ### 2) Verify the EFI partition is mounted
 
@@ -372,14 +414,11 @@ Before installing, confirm that your EFI System Partition (ESP) is mounted at `/
 findmnt /boot/efi
 ```
 
-You should see it listed as `vfat`.
-If not, mount it manually (assuming ESP is `/dev/sda1`):
+You should see it listed as `vfat`. If not, mount it manually (assuming ESP is `/dev/sda1`):
 
 ```
 mount /dev/sda1 /boot/efi
 ```
-
----
 
 ### 3) Install GRUB to the EFI directory
 
@@ -389,17 +428,17 @@ Run the installation command:
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
 ```
 
-* `--target=x86_64-efi` → 64-bit UEFI firmware target
-* `--efi-directory=/boot/efi` → location where your EFI partition is mounted
-* `--bootloader-id=GRUB` → how the bootloader will appear in your firmware’s boot menu
+* `--target=x86_64-efi` for 64-bit UEFI firmware target
+* `--efi-directory=/boot/efi` for the location where your EFI partition is mounted
+* `--bootloader-id=GRUB` for how the bootloader will appear in your firmware's boot menu
 
 > **Common Issues**
 >
-> * **“cannot find EFI directory”** → ESP not mounted at `/boot/efi`. Mount it and retry.
-> * **“EFI variables are not supported”** → installer was booted in BIOS mode, not UEFI. Reboot ISO in UEFI mode.
-> * **“failed to get canonical path of ‘airootfs’”** → you ran this outside the chroot. Run `arch-chroot /mnt` first.
-
----
+> * **"cannot find EFI directory"** means the ESP is not mounted at `/boot/efi`. Mount it and retry.
+> * **"EFI variables are not supported"** means the installer was booted in BIOS mode, not UEFI.
+>   Reboot the ISO in UEFI mode.
+> * **"failed to get canonical path of 'airootfs'"** means you ran this outside the chroot. Run
+>   `arch-chroot /mnt` first.
 
 ### 4) Generate GRUB configuration
 
@@ -409,44 +448,19 @@ Finally, generate the GRUB configuration file:
 grub-mkconfig -o /boot/grub/grub.cfg
 ```
 
-This command scans for installed kernels, initramfs images, and other OS installs, then writes a `grub.cfg` used at boot.
+This command scans for installed kernels, initramfs images, and other OS installs, then writes a
+`grub.cfg` used at boot.
 
 > **Note**
-> Because we installed `intel-ucode` earlier, GRUB will automatically detect and include the CPU microcode in the boot entries.
+> Because we installed a microcode package earlier (`intel-ucode` or `amd-ucode`), GRUB will
+> automatically detect and include the CPU microcode in the boot entries.
 
 ---
-
-### 5) Done
-
-At this point, GRUB is installed. You can now exit the chroot, unmount all partitions, and reboot:
-
-```
-exit
-umount -R /mnt
-reboot
-```
-
----
-
-## Final checks and clean exit
-
-Verify mounts:
-
-```
-findmnt /mnt
-```
-
-Exit chroot and unmount recursively:
-
-```
-exit
-umount -R /mnt
-reboot
-```
 
 ## Create a User Account
 
-By default, only the `root` account exists after installation. To log into your desktop environment later (GNOME, KDE, etc.), you need a regular user account.
+By default, only the `root` account exists after installation. To log into your desktop environment
+later (GNOME, KDE, etc.), you need a regular user account.
 
 Create a user (replace `<username>` with your choice):
 
@@ -455,9 +469,9 @@ useradd -m -G wheel -s /bin/bash <username>
 passwd <username>
 ```
 
-* `-m` → creates the user’s home directory under `/home/<username>`
-* `-G wheel` → adds the user to the `wheel` group (needed for sudo/admin rights)
-* `-s /bin/bash` → sets Bash as the default shell
+* `-m` creates the user's home directory under `/home/<username>`
+* `-G wheel` adds the user to the `wheel` group (needed for sudo / admin rights)
+* `-s /bin/bash` sets Bash as the default shell
 
 Enable sudo access for the `wheel` group:
 
@@ -473,68 +487,12 @@ Uncomment the line:
 
 This allows your new user to perform administrative tasks with `sudo`.
 
-## Locale and Keyboard Configuration
+---
 
-Before installing a desktop environment or display manager, you should configure the system locale and keyboard layout. This ensures your greeter (SDDM/GDM) and applications default to the correct language and keyboard mapping.
+## X11 Keyboard Layout
 
-### 1. Configure Locale
-
-Edit the locale configuration file and uncomment the locale you wish to use (for example, `en_GB.UTF-8 UTF-8`):
-
-```bash
-vi /etc/locale.gen
-```
-
-Uncomment:
-
-```
-en_GB.UTF-8 UTF-8
-en_US.UTF-8 UTF-8   # optional fallback
-```
-
-Generate the locales:
-
-```bash
-locale-gen
-```
-
-Set the default system locale:
-
-```bash
-echo "LANG=en_GB.UTF-8" > /etc/locale.conf
-```
-
-Verify with:
-
-```bash
-locale
-```
-
-### 2. Configure Console Keymap
-
-Set the keymap for the virtual console (TTY):
-
-```bash
-echo "KEYMAP=uk" > /etc/vconsole.conf
-```
-
-Apply it immediately with:
-
-```bash
-loadkeys uk
-```
-
-Check mapping with:
-
-```bash
-dumpkeys | grep -A1 "^keycode 3"
-```
-
-For UK layout you should see `two at quotedbl`, meaning `Shift+2 = "`.
-
-### 3. Configure X11 Keyboard Layout
-
-To ensure your display manager and graphical environment use the correct keyboard layout:
+You already set the console keymap above. The display manager and graphical environment use a separate
+X11 layout. Set it now so your greeter (SDDM / GDM) defaults to the correct keyboard mapping:
 
 ```bash
 localectl set-x11-keymap gb
@@ -562,9 +520,9 @@ Expected output:
 layout: gb
 ```
 
-### 4. SDDM/GDM Keyboard Override (if needed)
+### SDDM keyboard override (if needed)
 
-If your greeter still defaults to US, force it in SDDM:
+If your greeter still defaults to US once you install a desktop environment, force it in SDDM.
 
 Create `/etc/sddm.conf.d/keyboard.conf`:
 
@@ -579,27 +537,44 @@ Restart SDDM:
 systemctl restart sddm
 ```
 
-For GDM, layouts are selected at login from the gear menu. Ensure `gb` is listed under `/usr/share/X11/xkb/rules/base.lst`.
+For GDM, layouts are selected at login from the gear menu. Ensure `gb` is listed under
+`/usr/share/X11/xkb/rules/base.lst`.
 
-### Reference
+> **Common Mismatch (US vs UK)**
+>
+> Symptom: `Shift+2` produces `@` instead of `"`.
+>
+> Cause: the system is still using US layout.
+>
+> Fix: confirm `dumpkeys` (for TTY) and `setxkbmap -query` (for X11) both show `gb`. Apply corrections
+> with `loadkeys uk` and `localectl set-x11-keymap gb`. Restart SDDM / GDM if required.
 
-This process is described in the official Arch Wiki:
+References:
 
-* [Installation Guide → Configure the system → Locale](https://wiki.archlinux.org/title/Installation_guide#Locale)
+* [Installation Guide: Configure the system: Locale](https://wiki.archlinux.org/title/Installation_guide#Locale)
 * [Arch Wiki: Locale](https://wiki.archlinux.org/title/Locale)
 * [Arch Wiki: Xorg/Keyboard configuration](https://wiki.archlinux.org/title/Xorg/Keyboard_configuration)
 
 ---
 
-> **Common Mismatch (US vs UK)**
->
-> Symptom: `Shift+2` = `@` instead of `"`.
->
-> *Cause*: System is still using US layout.
->
-> *Fix*: Confirm `dumpkeys` (for TTY) and `setxkbmap -query` (for X11) both show `gb`. Apply corrections with `loadkeys uk` and `localectl set-x11-keymap gb`. Restart SDDM/GDM if required.
+## Final Checks and Clean Exit
 
+Verify mounts:
 
----
+```
+findmnt /mnt
+```
 
-\| [← Previous](../chapters/1_virtual_machine.md) | [Next →](../chapters/3_desktop_environment.md) |
+Exit chroot and unmount recursively:
+
+```
+exit
+umount -R /mnt
+reboot
+```
+
+You should now boot into a clean Arch system. The next chapter walks you through installing a desktop
+environment.
+
+| [← Previous](./3_wiping_drives.md) | [Next →](./5_desktop_environment.md) |
+|:--|--:|

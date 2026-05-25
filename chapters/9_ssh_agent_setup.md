@@ -1,6 +1,6 @@
 # Stopping Git from Asking for My SSH Passphrase Every Time
 
-This is how I solved the problem of Git constantly asking for my SSH key passphrase on every push — particularly annoying with tools like the Obsidian Git plugin, which auto-commits in the background and has no way to prompt for a passphrase.
+This is how I solved the problem of Git constantly asking for my SSH key passphrase on every push, which is particularly annoying with tools like the Obsidian Git plugin that auto-commits in the background and has no way to prompt for a passphrase.
 
 The fix is to run a persistent SSH agent that keeps my unlocked key in memory for the whole login session, and to make sure every program I run can find that same agent.
 
@@ -8,7 +8,7 @@ The fix is to run a persistent SSH agent that keeps my unlocked key in memory fo
 
 There are three moving parts:
 
-1. **An SSH agent that keeps running.** This is the daemon that holds my unlocked key in memory. On Arch (and most modern Linux distros) the OpenSSH package ships a ready-made systemd user unit for this — I don't have to write one.
+1. **An SSH agent that keeps running.** This is the daemon that holds my unlocked key in memory. On Arch (and most modern Linux distros) the OpenSSH package ships a ready-made systemd user unit for this, so I don't have to write one.
 2. **An environment variable that points at the agent.** Every SSH client looks at `SSH_AUTH_SOCK` to find the agent. If a program is started in a session where that variable isn't set, it can't talk to the agent and falls back to prompting. So I need to make sure `SSH_AUTH_SOCK` is exported into my whole desktop session, not just the terminal I happened to start the agent in.
 3. **An SSH config that auto-adds my key on first use.** With `AddKeysToAgent yes`, the very first SSH operation of the session asks for my passphrase, then the agent caches the unlocked key. Every subsequent operation is silent.
 
@@ -47,7 +47,7 @@ I created `~/.config/environment.d/ssh-agent.conf`:
 SSH_AUTH_SOCK=${XDG_RUNTIME_DIR}/ssh-agent.socket
 ```
 
-`environment.d` is read by systemd at login and the variables get pushed into every process my session spawns — terminals, GUI apps from the application menu, everything. This is the part most "I followed a tutorial and it still doesn't work" stories miss: setting the variable in `.bashrc` only helps terminals; GUI apps launched from the menu won't see it.
+`environment.d` is read by systemd at login and the variables get pushed into every process my session spawns: terminals, GUI apps from the application menu, everything. This is the part most "I followed a tutorial and it still doesn't work" stories miss. Setting the variable in `.bashrc` only helps terminals; GUI apps launched from the menu won't see it.
 
 ### 3. The SSH config
 
@@ -94,7 +94,7 @@ The path should match what `echo $SSH_AUTH_SOCK` prints in my terminal.
 
 ## The "first push of the session" gotcha
 
-Because `AddKeysToAgent yes` prompts on first use, *something* needs to be able to display that prompt. From a terminal it's fine — SSH just asks. But a GUI app like Obsidian has no terminal attached, so if it happens to be the first thing to need the key after login, the prompt has nowhere to go and the operation fails silently.
+Because `AddKeysToAgent yes` prompts on first use, *something* needs to be able to display that prompt. From a terminal it's fine, SSH just asks. But a GUI app like Obsidian has no terminal attached, so if it happens to be the first thing to need the key after login, the prompt has nowhere to go and the operation fails silently.
 
 Two ways around it:
 
@@ -153,10 +153,13 @@ After this, the credential is cached on disk and every push (including Obsidian 
 
 ## Why this took so long to figure out
 
-Most "fix Git asking for passphrase" guides only handle one piece — usually the SSH config — and assume the agent and the env var "just work". On Linux desktops they often don't, because:
+Most "fix Git asking for passphrase" guides only handle one piece (usually the SSH config) and assume the agent and the env var "just work". On Linux desktops they often don't, because:
 
 - Starting `ssh-agent` from a shell only sets `SSH_AUTH_SOCK` in *that shell* and its children.
 - GUI apps launched from the application menu inherit their environment from the desktop session, which started before any shell.
 - So the agent is running, the variable is set in your terminal, but the GUI app has no idea any of that exists.
 
-The `environment.d` file is what bridges the gap — it lets systemd push the variable into the desktop session itself, before any apps start.
+The `environment.d` file is what bridges the gap. It lets systemd push the variable into the desktop session itself, before any apps start.
+
+| [← Previous](./8_virtual_labs.md) | [Next →](./10_wacom_and_display.md) |
+|:--|--:|
