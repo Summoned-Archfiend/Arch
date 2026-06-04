@@ -141,11 +141,66 @@ having actually fixed enough things to trust your reasoning.
 
 | Purpose               | Tool                    | Wiki Page                                                                  |
 | --------------------- | ----------------------- | -------------------------------------------------------------------------- |
-| News headlines        | custom `archnews` alias | n/a                                                                        |
+| News headlines        | custom `archnews` alias | [Reading Arch News](#reading-arch-news-before-updates)                      |
 | Snapshot automation   | Snapper                 | [Snapper](https://wiki.archlinux.org/title/Snapper)                        |
 | GRUB snapshot entries | grub-btrfs              | [GRUB-btrfs](https://wiki.archlinux.org/title/GRUB-btrfs)                  |
 | Mirror optimization   | reflector               | [Reflector](https://wiki.archlinux.org/title/Reflector)                    |
 | Offline wiki          | arch-wiki-docs          | [Arch Wiki Docs](https://wiki.archlinux.org/title/Archwiki:Offline_access) |
+
+## Reading Arch News Before Updates
+
+`Arch` is a rolling release, which means an update can land that needs you to do something by hand
+before it is safe. A new `pacman` keyring, a config file that moved, a package that split in two.
+Those manual steps get announced on [Arch News](https://archlinux.org/news/) first. The discipline
+worth building is simple: glance at the news before every `pacman -Syu`. The `archnews` alias exists
+so that glance costs no effort. It prints the latest headlines straight into the terminal.
+
+Add it to your `~/.bashrc`:
+
+```bash
+alias archnews='echo "📰  Latest Arch Linux News:"; \
+  curl -fsSL https://archlinux.org/feeds/news/ \
+  | grep -oP "(?<=<title>)[^<]+" \
+  | sed -n "2,6p"'
+```
+
+Reload your shell so the alias takes effect:
+
+```bash
+source ~/.bashrc
+```
+
+Now `archnews` prints the five most recent headlines:
+
+```
+📰  Latest Arch Linux News:
+<the five most recent Arch News titles, newest first>
+```
+
+It is a short pipeline, and reading it left to right is a decent `Bash` lesson in itself:
+
+* `curl -fsSL https://archlinux.org/feeds/news/` fetches the news `RSS` feed. The flags matter:
+  `-f` makes `curl` fail on an `HTTP` error instead of printing an error page as if it were data,
+  `-s` hides the progress meter, `-S` keeps real error messages visible despite `-s`, and `-L`
+  follows redirects so a moved feed still resolves.
+* `grep -oP "(?<=<title>)[^<]+"` pulls the text out of each `<title>` tag. `-P` turns on
+  `Perl`-compatible regex so the `(?<=<title>)` look-behind works, and `-o` prints only the matched
+  text rather than the whole line.
+* `sed -n "2,6p"` prints lines two through six and nothing else. Line one is the feed's own channel
+  title (`Arch Linux: Recent news updates`), not an article, so skipping it leaves the five newest
+  story headlines.
+
+Two things worth knowing:
+
+* This shows headlines only, not the body of each item. When a headline looks like it might affect
+  you, open [Arch News](https://archlinux.org/news/) and read the full entry before you update. The
+  manual-intervention steps live in the body, not the title.
+* There is also a standalone `archnews` package in the repos that installs `/usr/bin/archnews`, a
+  fuller-featured reader that can show article bodies and dates and has a few display modes (see its
+  `-h`). An alias of the same name shadows that binary in your interactive shells, which is fine if
+  the lightweight headline view is all you want. If you would rather use the packaged tool, drop the
+  alias (or call it by its full path, `/usr/bin/archnews`). Either way, keep a single alias
+  definition in `~/.bashrc`; if the name appears twice, the last one `Bash` reads is the one you get.
 
 ## Journaling and Documentation
 

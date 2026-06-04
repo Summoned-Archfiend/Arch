@@ -1,20 +1,37 @@
 #!/usr/bin/env bash
 # Map a Wacom Cintiq 16 (2025) stylus, eraser, and pad to its current
-# output geometry. Re-detects the output from xrandr on every run, so it
-# follows layout changes.
+# output geometry. Re-detects both the output and the device names on
+# every run, so it follows layout changes and survives driver renames.
 #
-# Identification strategy: match xrandr's "<W>mm x <H>mm" physical-size
+# Output identification: match xrandr's "<W>mm x <H>mm" physical-size
 # column against the Cintiq's panel size (345mm x 216mm). This is more
 # robust than trusting the connector name, which can change if you replug
 # into a different port. It also avoids the `xsetwacom ... MapToOutput
 # <name>` failure mode that hits on NVIDIA's proprietary driver, where
 # xsetwacom often cannot resolve the RandR output by name and bails with
 # "Unable to find an output".
+#
+# Device identification: do NOT hardcode the device name. The name that
+# the driver reports has changed across updates (for example from
+# "Wacom Co.,Ltd. Wacom Cintiq 16 Stylus stylus" to
+# "Wacom Cintiq 16 Pen stylus"), and a hardcoded string breaks silently
+# the next time it changes, with every xsetwacom call failing on "Cannot
+# find device". Resolve the name by device TYPE instead. `xsetwacom
+# --list devices` prints tab-separated rows like:
+#     Wacom Cintiq 16 Pen stylus<TAB>id: 31<TAB>type: STYLUS
+# The name column carries trailing spaces, so trim it before use.
 
 set -euo pipefail
 
 PANEL_SIZE="345mm x 216mm"
-DEVICE_PREFIX="Wacom Co.,Ltd. Wacom Cintiq 16 Stylus"
+
+# $1 = STYLUS | ERASER | PAD. Prints the current device name, empty if absent.
+wacom_dev() {
+  xsetwacom --list devices | awk -F'\t' -v t="$1" '
+    $1 ~ /Cintiq/ && index($3, "type: " t) {
+      gsub(/[ \t]+$/, "", $1); print $1; exit
+    }'
+}
 
 geom=$(xrandr --query | awk -v size="$PANEL_SIZE" '
   / connected/ && index($0, size) {
@@ -29,8 +46,17 @@ if [ -z "$geom" ]; then
   exit 1
 fi
 
-for sub in stylus eraser pad; do
-  xsetwacom set "$DEVICE_PREFIX $sub" MapToOutput "$geom"
+mapped=0
+for type in STYLUS ERASER PAD; do
+  dev=$(wacom_dev "$type")
+  [ -z "$dev" ] && continue   # not every unit exposes a pad; skip what is absent
+  xsetwacom set "$dev" MapToOutput "$geom"
+  mapped=$((mapped + 1))
 done
 
-echo "wacom-remap: mapped Cintiq devices to $geom"
+if [ "$mapped" -eq 0 ]; then
+  echo "wacom-remap: no Cintiq input devices found (is it plugged in?)" >&2
+  exit 1
+fi
+
+echo "wacom-remap: mapped $mapped Cintiq device(s) to $geom"

@@ -66,17 +66,29 @@ self-test that the watchdog recovers from a forced reset.
 
 ## Customising the Wacom scripts for a different model
 
-Change two constants at the top of `wacom-remap`, `wacom-watch`, and
-`wacom-setup`:
+There is one constant to change at the top of `wacom-remap`,
+`wacom-watch`, and `wacom-setup`:
 
 ```bash
-PANEL_SIZE="345mm x 216mm"                            # `xrandr --query` shows this
-DEVICE_PREFIX="Wacom Co.,Ltd. Wacom Cintiq 16 Stylus" # `xsetwacom --list` shows this
+PANEL_SIZE="345mm x 216mm"   # the physical-size column `xrandr --query` prints
 ```
 
 `PANEL_SIZE` must match the physical-size column that `xrandr` prints
-for your tablet. `DEVICE_PREFIX` must match what `xsetwacom --list`
-reports, minus the final `stylus` / `eraser` / `pad` suffix.
+for your tablet.
+
+The scripts no longer hardcode a device name. They resolve it from
+`xsetwacom --list` by device type (`STYLUS`, `ERASER`, `PAD`), filtering
+on the word `Cintiq` in the name. This matters because the name the
+driver reports drifts across updates. I have seen the same tablet show
+up as `Wacom Co.,Ltd. Wacom Cintiq 16 Stylus stylus` and later as
+`Wacom Cintiq 16 Pen stylus`. A hardcoded string breaks the moment that
+happens, and it fails quietly, with every `xsetwacom` call printing
+`Cannot find device` into the log while the watcher keeps running. Matching
+by type sidesteps that entirely.
+
+If your tablet is not a Cintiq, change the `/Cintiq/` filter in the
+`wacom_dev` and `stylus_name` functions to a word that appears in your
+own device's name (run `xsetwacom --list` to see it).
 
 ## Hardening quick install
 

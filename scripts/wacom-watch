@@ -21,9 +21,20 @@ LOG=~/.cache/wacom-watch.log
 exec >>"$LOG" 2>&1
 
 REMAP=~/.local/bin/wacom-remap
-STYLUS_NAME="Wacom Co.,Ltd. Wacom Cintiq 16 Stylus stylus"
 POLL_INTERVAL=5
 IDENTITY_CTM="1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000"
+
+# Resolve the stylus device name by TYPE rather than hardcoding it. The
+# reported name drifts across driver updates, and a stale string broke the
+# watchdog silently in the past: it polled a name that no longer existed,
+# so it never detected the reset and never recovered. Re-resolved on every
+# poll, so even a hotplug rename heals itself.
+stylus_name() {
+  xsetwacom --list devices | awk -F'\t' '
+    $1 ~ /Cintiq/ && index($3, "type: STYLUS") {
+      gsub(/[ \t]+$/, "", $1); print $1; exit
+    }'
+}
 
 echo "[$(date)] wacom-watch starting (pid $$)"
 
@@ -47,9 +58,11 @@ randr_listener() {
 }
 
 ctm_watchdog() {
-  local ctm
+  local ctm stylus
   while sleep "$POLL_INTERVAL"; do
-    ctm=$(xinput list-props "$STYLUS_NAME" 2>/dev/null \
+    stylus=$(stylus_name)
+    [ -z "$stylus" ] && continue   # tablet unplugged; nothing to poll
+    ctm=$(xinput list-props "$stylus" 2>/dev/null \
           | awk -F'\t' '/Coordinate Transformation Matrix/ { print $NF }')
     [ -z "$ctm" ] && continue
     if [ "$ctm" = "$IDENTITY_CTM" ]; then

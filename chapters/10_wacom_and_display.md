@@ -95,33 +95,53 @@ it.
 To see your Wacom device names:
 
 ```bash
-xsetwacom --list
+xsetwacom --list devices
 ```
 
 Expected output for the Cintiq 16:
 
 ```
-Wacom Co.,Ltd. Wacom Cintiq 16 Stylus stylus   id: 25  type: STYLUS
-Wacom Co.,Ltd. Wacom Cintiq 16 Stylus eraser   id: 26  type: ERASER
-Wacom Co.,Ltd. Wacom Cintiq 16 Stylus pad      id: 27  type: PAD
+Wacom Cintiq 16 Pen stylus   id: 31  type: STYLUS
+Wacom Cintiq 16 Pen eraser   id: 32  type: ERASER
 ```
 
-Note that the device prefix is `Wacom Co.,Ltd. Wacom Cintiq 16 Stylus` and the suffix is one of
-`stylus`, `eraser`, or `pad`. All three need mapping or you will draw fine but erase across
-random monitors.
+Each row is the device name, then its `id`, then its `type`. The name splits into a prefix and a
+suffix of `stylus`, `eraser`, or `pad`. Every device that is present needs mapping, or you will
+draw fine but erase across random monitors. Some units expose a `pad` device for the buttons and
+some do not, so do not worry if you only see two rows.
+
+There is a trap here worth calling out early, because it cost me an afternoon. The device name is
+**not stable across driver updates**. The same tablet on the same machine has reported itself as
+`Wacom Co.,Ltd. Wacom Cintiq 16 Stylus stylus` under one driver version and `Wacom Cintiq 16 Pen
+stylus` under a later one. If you hardcode the full name anywhere, the next rename breaks every
+`xsetwacom` call with `Cannot find device`, and it does so silently. The watcher keeps running and
+the log fills with errors while the pen drifts.
+
+The way around this is to never match on the full name. Match on the **device type** instead, which
+does not change. This one-liner reads the current stylus name straight from `xsetwacom`:
+
+```bash
+xsetwacom --list devices | awk -F'\t' '/type: STYLUS/{gsub(/[ \t]+$/,"",$1);print $1;exit}'
+```
+
+The rows are tab-separated and the name column carries trailing spaces, which is what the `-F'\t'`
+and the `gsub` are dealing with. Every script in this chapter resolves device names this way, so a
+future rename does not break anything. You never type the name yourself.
 
 ---
 
 ## 3. The One-Shot Remap
 
 Manual command (substitute the `WxH+X+Y` value you read from your own
-`xrandr` output above):
+`xrandr` output above). Rather than hardcoding device names, it pulls every Cintiq device straight
+from `xsetwacom --list` and maps each one, which is the same approach the scripts take:
 
 ```bash
 GEOM="<WxH+X+Y for the 345mm x 216mm output>"
-for sub in stylus eraser pad; do
-  xsetwacom set "Wacom Co.,Ltd. Wacom Cintiq 16 Stylus $sub" MapToOutput "$GEOM"
-done
+xsetwacom --list devices | awk -F'\t' '/Cintiq/{gsub(/[ \t]+$/,"",$1);print $1}' |
+  while IFS= read -r dev; do
+    xsetwacom set "$dev" MapToOutput "$GEOM"
+  done
 ```
 
 To verify, draw on the Cintiq. The cursor should stay on that panel and the pen tip should match
@@ -376,6 +396,20 @@ qdbus6 org.kde.kded6 /kded unloadModule wacomtablet
 The `+X+Y` offset has changed. Re-run `xrandr --query` to confirm the new offset, then run
 `wacom-remap`. The watcher should pick this up automatically on the `RandR` event, but
 running it manually is a fast confirmation that the geometry detection still works.
+
+**Pen broke after a driver or kernel update, and the log is full of `Cannot find device`.**
+
+The driver has renamed the tablet. Confirm the current name:
+
+```bash
+xsetwacom --list devices
+```
+
+If the scripts in this chapter are installed, you do not need to change anything; they resolve the
+name by device type, so they pick up the new name on the next run. Just run `wacom-remap`. If you
+wrote your own mapping that hardcodes the old name, this is why it stopped working. Switch it to the
+type-based lookup shown in section 2. The log lives at `~/.cache/wacom-watch.log`, and a run of
+`Cannot find device` lines is the signature of this exact problem.
 
 **Wayland.**
 

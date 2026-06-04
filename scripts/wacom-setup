@@ -23,8 +23,18 @@
 set -euo pipefail
 
 PANEL_SIZE="345mm x 216mm"
-STYLUS_NAME="Wacom Co.,Ltd. Wacom Cintiq 16 Stylus stylus"
 IDENTITY_CTM="1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000"
+
+# Resolve the stylus name by TYPE rather than hardcoding it; the reported
+# name drifts across driver updates (see the comments in the installed
+# wacom-remap for the full reasoning).
+stylus_name() {
+  xsetwacom --list devices | awk -F'\t' '
+    $1 ~ /Cintiq/ && index($3, "type: STYLUS") {
+      gsub(/[ \t]+$/, "", $1); print $1; exit
+    }'
+}
+STYLUS_NAME="$(stylus_name)"
 
 step()  { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 ok()    { printf '   ok\n' >&2; }
@@ -57,10 +67,19 @@ step "installing ~/.local/bin/wacom-remap"
 mkdir -p ~/.local/bin
 cat > ~/.local/bin/wacom-remap <<'REMAP_EOF'
 #!/usr/bin/env bash
+# Resolve the device name by TYPE, never hardcode it: the reported name
+# drifts across driver updates and a stale string fails on "Cannot find
+# device". See the standalone wacom-remap in this repo for the full notes.
 set -euo pipefail
 
 PANEL_SIZE="345mm x 216mm"
-DEVICE_PREFIX="Wacom Co.,Ltd. Wacom Cintiq 16 Stylus"
+
+wacom_dev() {   # $1 = STYLUS | ERASER | PAD
+  xsetwacom --list devices | awk -F'\t' -v t="$1" '
+    $1 ~ /Cintiq/ && index($3, "type: " t) {
+      gsub(/[ \t]+$/, "", $1); print $1; exit
+    }'
+}
 
 geom=$(xrandr --query | awk -v size="$PANEL_SIZE" '
   / connected/ && index($0, size) {
@@ -75,11 +94,20 @@ if [ -z "$geom" ]; then
   exit 1
 fi
 
-for sub in stylus eraser pad; do
-  xsetwacom set "$DEVICE_PREFIX $sub" MapToOutput "$geom"
+mapped=0
+for type in STYLUS ERASER PAD; do
+  dev=$(wacom_dev "$type")
+  [ -z "$dev" ] && continue
+  xsetwacom set "$dev" MapToOutput "$geom"
+  mapped=$((mapped + 1))
 done
 
-echo "wacom-remap: mapped Cintiq devices to $geom"
+if [ "$mapped" -eq 0 ]; then
+  echo "wacom-remap: no Cintiq input devices found (is it plugged in?)" >&2
+  exit 1
+fi
+
+echo "wacom-remap: mapped $mapped Cintiq device(s) to $geom"
 REMAP_EOF
 chmod +x ~/.local/bin/wacom-remap
 ok
@@ -94,9 +122,16 @@ LOG=~/.cache/wacom-watch.log
 exec >>"$LOG" 2>&1
 
 REMAP=~/.local/bin/wacom-remap
-STYLUS_NAME="Wacom Co.,Ltd. Wacom Cintiq 16 Stylus stylus"
 POLL_INTERVAL=5
 IDENTITY_CTM="1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000"
+
+# Resolve the stylus name by TYPE on every poll, so a driver rename heals.
+stylus_name() {
+  xsetwacom --list devices | awk -F'\t' '
+    $1 ~ /Cintiq/ && index($3, "type: STYLUS") {
+      gsub(/[ \t]+$/, "", $1); print $1; exit
+    }'
+}
 
 echo "[$(date)] wacom-watch starting (pid $$)"
 
@@ -120,9 +155,11 @@ randr_listener() {
 }
 
 ctm_watchdog() {
-  local ctm
+  local ctm stylus
   while sleep "$POLL_INTERVAL"; do
-    ctm=$(xinput list-props "$STYLUS_NAME" 2>/dev/null \
+    stylus=$(stylus_name)
+    [ -z "$stylus" ] && continue
+    ctm=$(xinput list-props "$stylus" 2>/dev/null \
           | awk -F'\t' '/Coordinate Transformation Matrix/ { print $NF }')
     [ -z "$ctm" ] && continue
     if [ "$ctm" = "$IDENTITY_CTM" ]; then
