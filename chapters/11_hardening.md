@@ -596,5 +596,5 @@ if it is compromised". Every chapter in this repo has tried to leave
 you with a system you understand. This one is the chapter that asks you
 to keep understanding it next week, and the week after.
 
-| [← Previous](./10_wacom_and_display.md) |
-|:--|
+| [← Previous](./10_wacom_and_display.md) | [Next →](./12_arduino.md) |
+|:--|--:|

@@ -60,6 +60,7 @@ and I suggest you learn the basics via an `OS` like `Windows` or `Ubuntu` first.
 9. [SSH Agent Setup](./chapters/9_ssh_agent_setup.md)
 10. [Wacom Cintiq and Multi-Display Configuration](./chapters/10_wacom_and_display.md)
 11. [Hardening Your Arch System](./chapters/11_hardening.md)
+12. [Programming an Arduino from VSCode](./chapters/12_arduino.md)
 
 See also: [Study Guide](./STUDY_GUIDE.md) for a wider learning roadmap, and
 the [scripts](./scripts) folder for helper scripts referenced by the chapters.
