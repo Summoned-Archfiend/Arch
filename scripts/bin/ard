@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+#
+# ard - Arduino build/upload/monitor helper built on arduino-cli.
+# Subcommand-based CLI. See `ard help` or `man ard`.
+#
+set -euo pipefail
+
+ARD_VERSION="1.0.0"
+DEFAULT_BAUD="115200"
+PORT_FALLBACK="/dev/ttyACM0"
+
+# ---- output helpers -------------------------------------------------------
+if [[ -t 1 ]]; then C_INFO=$'\033[1;36m'; C_OK=$'\033[1;32m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+else C_INFO=""; C_OK=""; C_DIM=""; C_OFF=""; fi
+err()  { printf 'ard: %s\n' "$*" >&2; }
+die()  { err "$*"; exit 1; }
+info() { printf '%s==>%s %s\n' "$C_INFO" "$C_OFF" "$*"; }
+ok()   { printf '%s[ok]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
+
+banner() {
+cat <<'EOF'
+   __ _ _ __ __| |
+  / _` | '__/ _` |
+ | (_| | | | (_| |
+  \__,_|_|  \__,_|
+EOF
+}
+
+usage() {
+  banner
+  cat <<EOF
+
+${C_DIM}ard ${ARD_VERSION} - compile, upload and monitor Arduino sketches (wraps arduino-cli).${C_OFF}
+
+USAGE
+    ard <command> [sketch] [options]
+
+COMMANDS
+    upload   [sketch]   Compile and flash the board        (alias: up)
+    compile  [sketch]   Compile only, do not flash          (alias: build)
+    flash    [sketch]   Compile, flash, then open monitor   (alias: run)
+    monitor             Open the serial monitor             (alias: mon)
+    list                List connected boards               (alias: boards, ls)
+    help                Show this help
+    version             Show version
+
+OPTIONS
+    -b, --fqbn FQBN     Board FQBN (default: auto-detect, e.g. arduino:avr:uno)
+    -p, --port PORT     Serial port (default: auto-detect, else ${PORT_FALLBACK})
+    -r, --baud RATE     Monitor baud rate (default: ${DEFAULT_BAUD})
+    -h, --help          Show this help
+    -V, --version       Show version
+
+ARGUMENTS
+    sketch   Path to a sketch folder. Defaults to the current directory; if that is
+             not a sketch, ard looks one level down and picks the sketch it finds.
+
+EXAMPLES
+    ard upload                 # auto-detect board, build + flash current sketch
+    ard flash                  # ... then open the serial monitor
+    ard compile ~/sk/Blink     # just compile a specific sketch
+    ard up -b arduino:avr:uno  # force a board
+    ard list                   # what is plugged in
+
+See 'man ard' for the full manual.
+EOF
+}
+
+command -v arduino-cli >/dev/null || die "arduino-cli not found on PATH"
+
+# ---- subcommand -----------------------------------------------------------
+[[ $# -eq 0 ]] && { usage; exit 0; }
+CMD=""
+case "$1" in
+  upload|up)            CMD="upload";  shift ;;
+  compile|build)        CMD="compile"; shift ;;
+  flash|run)            CMD="flash";   shift ;;
+  monitor|mon)          CMD="monitor"; shift ;;
+  list|boards|ls)       CMD="list";    shift ;;
+  help|-h|--help)       usage; exit 0 ;;
+  version|-V|--version) printf 'ard %s\n' "$ARD_VERSION"; exit 0 ;;
+  -*)                   die "unknown option '$1' (try 'ard help')" ;;
+  *)                    die "unknown command '$1' (try 'ard help')" ;;
+esac
+
+# ---- options + positional sketch -----------------------------------------
+FQBN=""; PORT=""; BAUD="$DEFAULT_BAUD"; DIR=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -b|--fqbn)    FQBN="${2:?--fqbn needs a value}"; shift 2 ;;
+    -p|--port)    PORT="${2:?--port needs a value}"; shift 2 ;;
+    -r|--baud)    BAUD="${2:?--baud needs a value}"; shift 2 ;;
+    -h|--help)    usage; exit 0 ;;
+    -V|--version) printf 'ard %s\n' "$ARD_VERSION"; exit 0 ;;
+    -*)           die "unknown option '$1' (try 'ard help')" ;;
+    *)            if [[ "$1" == *:*:* ]]; then FQBN="$1"; else DIR="$1"; fi; shift ;;
+  esac
+done
+DIR="${DIR:-.}"
+
+# ---- list needs nothing else ---------------------------------------------
+if [[ "$CMD" == "list" ]]; then arduino-cli board list; exit $?; fi
+
+# ---- auto-detect FQBN / port from the connected board --------------------
+if [[ -z "$FQBN" || -z "$PORT" ]]; then
+  read -r DET_PORT DET_FQBN < <(
+    arduino-cli board list --format json 2>/dev/null | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for p in d.get("detected_ports", []):
+    addr = p.get("port", {}).get("address", "")
+    boards = p.get("matching_boards") or []
+    fqbn = boards[0].get("fqbn", "") if boards else ""
+    if addr:
+        print(addr, fqbn)
+        break
+') || true
+  [[ -z "$PORT" ]] && PORT="${DET_PORT:-$PORT_FALLBACK}"
+  [[ -z "$FQBN" ]] && FQBN="${DET_FQBN:-}"
+fi
+
+# ---- monitor needs only a port -------------------------------------------
+if [[ "$CMD" == "monitor" ]]; then
+  info "monitoring ${PORT} @ ${BAUD} baud (Ctrl+C to stop)"
+  exec arduino-cli monitor -p "$PORT" -c baudrate="$BAUD"
+fi
+
+# ---- resolve the sketch folder (build/flash/compile) ---------------------
+[[ -n "$FQBN" ]] || die "no FQBN given and none auto-detected. Pass one (e.g. -b arduino:avr:uno) or run 'ard list'."
+[[ -d "$DIR" ]] || die "directory not found: $DIR"
+DIR="$(cd "$DIR" && pwd)"
+is_sketch() { [[ -f "$1/$(basename "$1").ino" ]]; }
+if ! is_sketch "$DIR"; then
+  mapfile -t SKETCHES < <(shopt -s nullglob; for d in "$DIR"/*/; do d="${d%/}"; is_sketch "$d" && echo "$d"; done)
+  if   [[ ${#SKETCHES[@]} -eq 1 ]]; then DIR="${SKETCHES[0]}"
+  elif [[ ${#SKETCHES[@]} -gt 1 ]]; then
+    err "multiple sketches under $(basename "$DIR"):"; printf '  %s\n' "${SKETCHES[@]##*/}" >&2
+    die "pick one, e.g. 'ard ${CMD} ${SKETCHES[0]##*/}'"
+  else
+    die "no sketch here. A sketch is a folder with a matching .ino (e.g. Blink/Blink.ino). cd into one, or pass it."
+  fi
+fi
+
+info "board=${FQBN}  port=${PORT}  sketch=${DIR}"
+
+case "$CMD" in
+  compile)
+    arduino-cli compile -b "$FQBN" "$DIR"
+    ok "compiled (not uploaded)"
+    ;;
+  upload)
+    arduino-cli compile -b "$FQBN" -u -p "$PORT" "$DIR"
+    ok "uploaded to ${PORT}"
+    ;;
+  flash)
+    arduino-cli compile -b "$FQBN" -u -p "$PORT" "$DIR"
+    ok "uploaded to ${PORT}"
+    info "monitoring ${PORT} @ ${BAUD} baud (Ctrl+C to stop)"
+    exec arduino-cli monitor -p "$PORT" -c baudrate="$BAUD"
+    ;;
+esac

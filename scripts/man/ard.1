@@ -1,0 +1,123 @@
+.TH ARD 1 "June 2026" "ard 1.0.0" "Arduino Helper Manual"
+.SH NAME
+ard \- compile, upload and monitor Arduino sketches
+.SH SYNOPSIS
+.B ard
+.I command
+.RI [ sketch ]
+.RI [ options ]
+.SH DESCRIPTION
+.B ard
+is a thin wrapper around
+.BR arduino-cli (1)
+that bundles the compile, upload and serial\-monitor steps into one command and
+removes the need to retype the board FQBN and serial port every time.
+.PP
+It works for any board: pass the FQBN with
+.B \-b
+or let
+.B ard
+auto\-detect a connected board with
+.B "arduino-cli board list"
+.RB ( --format
+.IR json ).
+The serial port is auto\-detected the same way, falling back to
+.IR /dev/ttyACM0 .
+.PP
+A sketch is a folder containing a
+.I <foldername>.ino
+file. If the
+.I sketch
+argument is omitted,
+.B ard
+uses the current directory; if that is not a sketch (for example the project
+root) it looks one level down and picks the single sketch it finds, or lists the
+candidates if there is more than one.
+.SH COMMANDS
+.TP
+.B upload " " [\fIsketch\fR]
+Compile and flash the board. Alias:
+.BR up .
+.TP
+.B compile " " [\fIsketch\fR]
+Compile only, do not flash. Alias:
+.BR build .
+.TP
+.B flash " " [\fIsketch\fR]
+Compile, flash, then open the serial monitor. Alias:
+.BR run .
+.TP
+.B monitor
+Open the serial monitor on the detected port. Alias:
+.BR mon .
+.TP
+.B list
+List connected boards. Aliases:
+.BR boards ", " ls .
+.TP
+.B help
+Show the built\-in help and exit.
+.TP
+.B version
+Print the version and exit.
+.SH OPTIONS
+.TP
+.BR \-b ", " \-\-fqbn " " \fIFQBN\fR
+Board FQBN, for example
+.IR arduino:renesas_uno:nanor4 " or " arduino:avr:uno .
+Defaults to the auto\-detected board. A bare positional argument that looks like
+.I packager:arch:board
+is also treated as the FQBN.
+.TP
+.BR \-p ", " \-\-port " " \fIPORT\fR
+Serial port. Defaults to the auto\-detected port, then
+.IR /dev/ttyACM0 .
+.TP
+.BR \-r ", " \-\-baud " " \fIRATE\fR
+Serial monitor baud rate. Default
+.IR 115200 .
+Must match the
+.B Serial.begin()
+rate in the sketch.
+.TP
+.BR \-h ", " \-\-help
+Show help and exit.
+.TP
+.BR \-V ", " \-\-version
+Show version and exit.
+.SH EXAMPLES
+.TP
+.B ard upload
+Auto\-detect the board, build and flash the sketch in the current folder.
+.TP
+.B ard flash
+As above, then open the serial monitor.
+.TP
+.B ard compile ~/sketches/Blink
+Compile a specific sketch without flashing.
+.TP
+.B ard up \-b arduino:avr:uno
+Force the board FQBN.
+.TP
+.B ard list
+Show what is plugged in.
+.SH EXIT STATUS
+.B ard
+exits 0 on success and non\-zero on failure (unknown command, no sketch found,
+or a failed
+.BR arduino-cli (1)
+step).
+.SH FILES
+.TP
+.I ~/.local/bin/ard
+Symlink onto the user PATH, pointing at the project copy in
+.IR bin/ard .
+.TP
+.I /etc/udev/rules.d/70-arduino.rules
+udev rule granting upload access to the USB bootloader. Without it an upload
+fails with
+.BR LIBUSB_ERROR_ACCESS .
+.SH SEE ALSO
+.BR arduino-cli (1)
+.SH AUTHOR
+Luke McCann.
