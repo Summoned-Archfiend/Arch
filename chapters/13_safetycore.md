@@ -93,8 +93,9 @@ A few points on why none of this is dangerous:
   *disable* rather than *delete*.
 - **The placeholder app is the most permanent fix, and it is auditable.** It
   is open source ([daboynb/Safetycore-placeholder](https://github.com/daboynb/Safetycore-placeholder)),
-  the release `APK` is roughly `35KB`, and it requests no permissions. It
-  works by installing an app that claims the same package name,
+  the release `APK` is roughly `35KB`, declares no sensitive permissions, and
+  carries no application code of its own. It works by installing an app that
+  claims the same package name,
   `com.google.android.safetycore`, but is signed with a different key. When
   Google's updater tries to push the real `SafetyCore` over the top, the
   signature does not match and the install is **rejected by Android itself**.
@@ -111,21 +112,41 @@ you can confirm what it is before you trust it, and you have `Arch` and
 `android-tools` right here to do it:
 
 ```bash
-# Inspect the placeholder APK before installing it.
-# aapt2 ships with the android-sdk-build-tools package (AUR), or use apkanalyzer.
-aapt2 dump permissions Safetycore-placeholder.apk   # expect: no permissions
-aapt2 dump badging Safetycore-placeholder.apk | grep -E 'package|versionCode'
+# Inspect the placeholder APK before installing it. aapt2 and apksigner ship
+# in android-sdk-build-tools (AUR). aapt2 is a native binary; apksigner is a
+# Java wrapper, so it also needs a JRE (sudo pacman -S jre-openjdk).
+aapt2 dump permissions Safetycore-placeholder.apk   # one AndroidX self-permission, no sensitive ones
+aapt2 dump badging Safetycore-placeholder.apk | grep -E 'package|sdkVersion|launchable'
 
-# See the signing certificate (it will NOT be Google's):
+# Print the signing certificate. You want a self-signed key that is NOT the
+# public debug key (CN=Android Debug), so forged updates cannot match it.
 apksigner verify --print-certs Safetycore-placeholder.apk
 ```
 
-A placeholder that genuinely does nothing will list **no** `uses-permission`
-lines, a `package` of `com.google.android.safetycore`, and a self-signed
-certificate that is plainly not Google's. That combination (no permissions,
-no services, a non-Google signature) is the whole trick, and the reason it
-is safe: an inert shell whose only job is to occupy the package name so the
-real thing cannot land.
+Read that output carefully, because "no permissions at all" is a myth. A
+modern AndroidX build always injects one **self-scoped** permission named
+`<package>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`. That is harmless
+boilerplate guarding the app's own broadcast receivers, not a request for
+any of your data. What matters is that you see **none of the dangerous
+ones**: no `INTERNET`, storage, camera, SMS, or location. You should also
+see a `package` of `com.google.android.safetycore`, a `versionCode` up in
+the billions, no launchable activity, and a self-signed certificate that is
+plainly not Google's (and not the forgeable `CN=Android Debug` key).
+
+The `APK` does ship a `classes.dex`, which can look alarming for something
+billed as "empty", but it is only the AndroidX and Kotlin library glue every
+build pulls in. With no launchable activity, no services, and no networking
+or `exec`-style calls anywhere in it, nothing actually runs. That whole
+combination, no sensitive permissions, no components, no app code, a real
+non-debug signature, is the trick, and the reason it is safe: an inert shell
+whose only job is to occupy the package name so the real thing cannot land.
+
+> **Note**
+> If you do not want to install a JRE just to read a certificate, the
+> signing block is parseable without `apksigner`. The cert is an X.509 `DER`
+> blob inside the v2/v3 APK Signing Block, and `python3` plus `openssl
+> x509 -inform DER -noout -text` will print it. The native `aapt2` covers
+> the permission and manifest side without Java at all.
 
 ---
 
@@ -236,8 +257,11 @@ the placeholder closes the door:
 
 2. **Audit the placeholder `APK` first** using the `aapt2` / `apksigner`
    checks from [section 2](#2-why-these-steps-and-why-they-are-safe). Only
-   install it once you have confirmed it requests no permissions and carries
-   a non-Google signature.
+   install it once you have confirmed it declares no sensitive permissions
+   and carries a real, non-debug signature. If you are not comfortable
+   trusting a stranger's binary at all, skip to
+   [section 7](#7-building-it-yourself-from-source-the-zero-trust-option)
+   and build it from source instead.
 3. **Side-load it** (you will need *Install unknown apps* enabled for your
    browser or file manager, and it must be installed *as the user*, not as a
    system app):
@@ -249,6 +273,122 @@ the placeholder closes the door:
 From then on, any attempt by Google Play to reinstall the real service fails
 the signature check and is refused. To undo it, uninstall the placeholder
 and `SafetyCore` is free to return.
+
+---
+
+## 7. Building It Yourself From Source (the zero-trust option)
+
+Section 6 assumes you trust the prebuilt `APK` from the project's releases
+page. In the interest of being straight with you, here is exactly what I
+found when I audited that binary, and exactly where the audit stops.
+
+What checked out clean:
+
+- **No sensitive permissions.** Only the AndroidX self-guard from
+  [section 2](#2-why-these-steps-and-why-they-are-safe), nothing that reaches
+  your data. Confirmed with `aapt2 dump permissions`.
+- **No code of its own.** The `classes.dex` is library glue only, with no
+  launchable activity, no services, and no networking or `exec`-style calls
+  found anywhere in it.
+- **A real, non-debug signature.** When I checked, it was signed with a
+  self-signed `RSA` 2048-bit key (subject `CN=taki`) valid into 2050, which
+  is *not* the forgeable public `CN=Android Debug` key.
+
+So as software it is inert and harmless. **Here is the part the audit cannot
+prove, stated plainly:** that signing key belongs to an unverifiable
+pseudonym, the binary is downloaded separately from the source you can read,
+and there is no way to cryptographically tie the two together. The audit
+shows the binary *does nothing dangerous*. It does not prove *who* built it
+or that it was built from the source above. On a hardened machine that
+residual is a fair reason to not install someone else's binary at all.
+
+The fix is to build it yourself. Same inert app, but compiled from source
+you have read and signed with a key only you hold, so the only thing on
+earth that can ever replace it is you.
+
+### Prerequisites
+
+The repo ships a Gradle wrapper, so you do not need system Gradle. You do
+need a `JDK` and the Android SDK pieces for API 34 (what the project
+targets):
+
+```bash
+sudo pacman -S jdk17-openjdk
+yay -S android-sdk-cmdline-tools-latest android-sdk-build-tools
+```
+
+The `AUR` SDK packages install under `/opt/android-sdk` owned by `root`, so
+give your user write access through a group (the same group-membership
+mechanism used elsewhere in this repo, and yes, you must re-log for it to
+apply):
+
+```bash
+sudo groupadd -f android-sdk
+sudo gpasswd -a "$USER" android-sdk
+sudo setfacl -R -m g:android-sdk:rwx /opt/android-sdk
+sudo setfacl -d -m g:android-sdk:rwx /opt/android-sdk   # default ACL for new files
+```
+
+Re-log, then accept the licences and pull the API 34 platform and
+build-tools:
+
+```bash
+export ANDROID_HOME=/opt/android-sdk
+yes | sdkmanager --licenses
+sdkmanager "platforms;android-34" "build-tools;34.0.0"
+```
+
+### Build the unsigned APK
+
+```bash
+git clone https://github.com/daboynb/Safetycore-placeholder.git
+cd Safetycore-placeholder
+./gradlew assembleRelease
+```
+
+The project defines no signing config, so this deliberately produces an
+*unsigned* release `APK` at:
+
+```
+app/build/outputs/apk/release/app-release-unsigned.apk
+```
+
+> **Note**
+> The project does not pin a build-tools version, so the Android Gradle
+> Plugin picks a default (`34.0.0` here). If a build fails complaining about
+> a missing component, it names the exact `platforms;...` or
+> `build-tools;...` string to feed `sdkmanager`. Install that and re-run.
+
+### Sign it with your own key
+
+```bash
+# Create your keystore once. Guard it: it is your sole control over updates.
+keytool -genkeypair -v -keystore ~/safetycore-placeholder.jks \
+  -alias placeholder -keyalg RSA -keysize 2048 -validity 10000
+
+cd app/build/outputs/apk/release
+zipalign -p -f 4 app-release-unsigned.apk app-release-aligned.apk
+apksigner sign --ks ~/safetycore-placeholder.jks \
+  --out Safetycore-placeholder.apk app-release-aligned.apk
+apksigner verify --print-certs Safetycore-placeholder.apk   # confirm it is YOUR cert
+```
+
+`zipalign` and `apksigner` come from `android-sdk-build-tools`; `keytool`
+comes from the `JDK`. `apksigner` is a Java wrapper, which is why the `JDK`
+above matters.
+
+### Install your build
+
+Any existing copy (the stranger's, or an older one of yours) signs
+differently, so remove it first:
+
+```bash
+adb shell pm uninstall --user 0 com.google.android.safetycore   # if present
+adb install Safetycore-placeholder.apk
+```
+
+Now the audited source *is* the running app, and your private key is the
+only thing that can replace it. You have extended trust to no one.
 
 ---
 
@@ -267,6 +407,10 @@ and `SafetyCore` is free to return.
 | Audit placeholder perms | `aapt2 dump permissions Safetycore-placeholder.apk` |
 | Check placeholder signer | `apksigner verify --print-certs Safetycore-placeholder.apk` |
 | Install placeholder | `adb install Safetycore-placeholder.apk` |
+| Build-from-source tooling | `sudo pacman -S jdk17-openjdk && yay -S android-sdk-cmdline-tools-latest android-sdk-build-tools` |
+| Build unsigned APK | `./gradlew assembleRelease` |
+| Make your signing key | `keytool -genkeypair -keystore ~/sc.jks -alias placeholder -keyalg RSA -keysize 2048 -validity 10000` |
+| Sign your build | `apksigner sign --ks ~/sc.jks --out Safetycore-placeholder.apk app-release-aligned.apk` |
 
 ---
 
