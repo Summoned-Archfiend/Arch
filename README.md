@@ -61,6 +61,7 @@ and I suggest you learn the basics via an `OS` like `Windows` or `Ubuntu` first.
 10. [Wacom Cintiq and Multi-Display Configuration](./chapters/10_wacom_and_display.md)
 11. [Hardening Your Arch System](./chapters/11_hardening.md)
 12. [Programming an Arduino from VSCode](./chapters/12_arduino.md)
+13. [Disabling Android System SafetyCore from Arch](./chapters/13_safetycore.md)
 
 See also: [Study Guide](./STUDY_GUIDE.md) for a wider learning roadmap, and
 the [scripts](./scripts) folder for helper scripts referenced by the chapters.

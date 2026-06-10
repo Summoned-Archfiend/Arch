@@ -606,5 +606,5 @@ The full Arduino language cheatsheet (program structure, digital and analog I/O,
 interrupts, the non-blocking timing pattern, and so on) lives in the `ArduinoWings` project README
 rather than here, since it is general Arduino reference and not part of the Arch setup itself.
 
-| [← Previous](./11_hardening.md) |
-|:--|
+| [← Previous](./11_hardening.md) | [Next →](./13_safetycore.md) |
+|:--|--:|
