@@ -44,7 +44,7 @@ Here is the accurate version:
   prompts a confirmation. That feature is opt-in. `SafetyCore` is the engine
   behind it.
 
-So what is the actual objection? Two things, and they are legitimate:
+So what is the actual objection? Three things, and they are all legitimate:
 
 1. **Consent.** It arrives silently through a Google Play system update or
    OEM firmware push and simply appears as a system app you never installed.
@@ -53,13 +53,54 @@ So what is the actual objection? Two things, and they are legitimate:
    can query, installed without consent, is exactly the kind of capability
    whose scope creeps. Today it powers an opt-in blur in one messaging app.
    The mechanism does not care what it is pointed at next.
+3. **Encryption, and the legal direction of travel.** At the moment an app
+   hands `SafetyCore` something to classify, it sees that content in the
+   clear. Nothing leaves the device today, but it is worth being precise
+   about why that still matters. End-to-end encryption exists so that nobody
+   but the sender and recipient can inspect a message; placing a
+   classification engine on the endpoint does not *break* the encryption, it
+   sidesteps the guarantee the encryption was meant to provide. This is the
+   exact risk set out in the 2021 paper *Bugs in Our Pockets* (Abelson,
+   Anderson, Schneier, et al.): client-side scanning leaves the cryptography
+   intact while reintroducing the third-party inspection that cryptography
+   was designed to prevent.
+
+   What turns this from an abstract worry into a concrete one is the
+   direction of UK law. The Online Safety Act 2023 (sections 121-122) already
+   lets `Ofcom` compel a messaging provider to deploy "accredited technology"
+   that scans content, including inside end-to-end-encrypted services, for
+   illegal material. No such technology has been certified yet and the final
+   guidance is still being settled, so this is being decided now rather than
+   closed. Separately, under the Investigatory Powers Act 2016 the government
+   served Apple a Technical Capability Notice over its encrypted iCloud
+   backups; rather than build the access demanded, Apple withdrew Advanced
+   Data Protection from UK users in 2025, and the tribunal let the order
+   stand. The powers to compel scanning of private content exist, and they
+   have already been used.
+
+   Put those facts together and the concern is not hypothetical machinery, it
+   is machinery that is already in place. The hardest part of any on-device
+   surveillance scheme, getting a content classifier onto every phone, is
+   already done. Turning a local classifier that reports to nobody into one
+   that flags and forwards what it finds would not require a new app, a
+   prompt, or anything you would see; it would require a policy change and a
+   legal order, both of which the UK is actively building the framework for.
+   That is the dangerous ground: not what `SafetyCore` does today, but how
+   little would have to change for it to do something else, and how invisible
+   that change would be.
 
 > **Note**
 > If you run `MicroG` or `GrapheneOS` and assumed you were exempt, reports
 > say otherwise. People on de-Googled and hardened setups have found it
 > too. Worth checking even if you think you are clean.
 
-Honourable mention from the original post: it wants around `2GB` of RAM.
+One myth worth killing while we are here: the viral posts claim `SafetyCore`
+"uses up to `2GB` of RAM". It does not. That figure is the minimum device RAM
+a phone must *have* to be eligible for the install, not the amount the service
+consumes. The `APK` is on the order of `44MB`, and because it does nothing
+until an app calls it, it has no persistent memory or background footprint to
+speak of. Repeating the `2GB` figure is exactly the kind of easily-falsified
+detail that lets the accurate objections get waved away as paranoia.
 
 If, having read that, you are comfortable with an opt-in feature backed by
 an on-device model, you can stop here and do nothing. The rest of this
