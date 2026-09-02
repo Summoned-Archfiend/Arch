@@ -462,5 +462,5 @@ installs itself without asking has earned a closer look, and because you own
 the box and the tools, you can give it one, then undo the decision just as
 easily if you change your mind.
 
-| [← Previous](./12_arduino.md) |
-|:--|
+| [← Previous](./12_arduino.md) | [Next →](./14_git_identity_and_credentials.md) |
+|:--|--:|

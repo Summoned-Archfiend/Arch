@@ -62,6 +62,7 @@ and I suggest you learn the basics via an `OS` like `Windows` or `Ubuntu` first.
 11. [Hardening Your Arch System](./chapters/11_hardening.md)
 12. [Programming an Arduino from VSCode](./chapters/12_arduino.md)
 13. [Disabling Android System SafetyCore from Arch](./chapters/13_safetycore.md)
+14. [Git Identity and Credential Storage](./chapters/14_git_identity_and_credentials.md)
 
 See also: [Study Guide](./STUDY_GUIDE.md) for a wider learning roadmap, and
 the [scripts](./scripts) folder for helper scripts referenced by the chapters.
