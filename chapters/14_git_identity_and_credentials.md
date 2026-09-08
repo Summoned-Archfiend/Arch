@@ -418,5 +418,5 @@ Once you separate the three layers, which mechanism authenticates, where the
 secret is kept, and which email is stamped on the commit, each one is
 individually simple. It is only the overlap that is hard.
 
-| [← Previous](./13_safetycore.md) |
-|:--|
+| [← Previous](./13_safetycore.md) | [Next →](./15_bluetooth.md) |
+|:--|--:|

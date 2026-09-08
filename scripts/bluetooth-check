@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#
+# bluetooth-check -- read-only Bluetooth status ladder.
+#
+# Four independent layers can each call themselves "enabled". Only the
+# last one determines whether Bluetooth actually works. This script walks
+# them in order so you can see which layer is lying to you.
+#
+# Read-only: runs as your normal user, changes nothing.
+#
+# See chapter 15: ../chapters/15_bluetooth.md
+
+set -uo pipefail
+
+ok()   { printf '  \033[32m|+|\033[0m %s\n' "$1"; }
+bad()  { printf '  \033[31m|-|\033[0m %s\n' "$1"; }
+note() { printf '      %s\n' "$1"; }
+
+# After a reset the adapter often comes back with a NEW index (hci0 -> hci1),
+# so never assume hci0. Pick the first real adapter unless told otherwise.
+# Skips hciX:Y child nodes, which are not adapters.
+default_hci() {
+    local d n
+    for d in /sys/class/bluetooth/*; do
+        [ -e "$d" ] || continue
+        n="$(basename "$d")"
+        case "$n" in
+            hci*:*) continue ;;
+            hci[0-9]*) printf '%s\n' "$n"; return 0 ;;
+        esac
+    done
+    return 1
+}
+
+HCI="${1:-$(default_hci || echo hci0)}"
+
+# Walk up the sysfs tree from the hci device to the USB device that hosts
+# it. The USB device dir is the first ancestor carrying an idVendor file.
+# Returns e.g. "1-3". Empty for built-in / non-USB adapters.
+hci_usb_path() {
+    local p
+    p="$(readlink -f "/sys/class/bluetooth/$HCI" 2>/dev/null)" || return 1
+    while [ "$p" != "/" ] && [ -n "$p" ]; do
+        if [ -f "$p/idVendor" ]; then basename "$p"; return 0; fi
+        p="$(dirname "$p")"
+    done
+    return 1
+}
+
+echo
+echo "Bluetooth status ladder  ($HCI)"
+echo "======================================================"
+
+echo
+echo "1. Daemon -- is bluetoothd alive?"
+[ "$(systemctl is-active bluetooth 2>/dev/null)" = active ] \
+    && ok "bluetooth.service is running" \
+    || bad "bluetooth.service NOT running   (sudo systemctl start bluetooth)"
+[ "$(systemctl is-enabled bluetooth 2>/dev/null)" = enabled ] \
+    && ok "starts at boot" \
+    || bad "not enabled at boot             (sudo systemctl enable bluetooth)"
+
+echo
+echo "2. Kill switch -- has something blocked the radio?"
+if ! rfkill list bluetooth 2>/dev/null | grep -q .; then
+    bad "rfkill reports no Bluetooth device at all"
+else
+    rfkill list bluetooth | grep -q "Soft blocked: yes" \
+        && bad "SOFT blocked                    (rfkill unblock bluetooth)" \
+        || ok "not soft blocked"
+    if rfkill list bluetooth | grep -q "Hard blocked: yes"; then
+        bad "HARD blocked"
+        note "physical switch, Fn key, or a BIOS/UEFI setting"
+        note "software cannot override this"
+    else
+        ok "not hard blocked"
+    fi
+fi
+
+echo
+echo "3. Adapter -- does the kernel see hardware?"
+if [ -d "/sys/class/bluetooth/$HCI" ]; then
+    USB="$(hci_usb_path || true)"
+    if [ -n "$USB" ]; then
+        VEN="$(cat "/sys/bus/usb/devices/$USB/idVendor" 2>/dev/null)"
+        PRD="$(cat "/sys/bus/usb/devices/$USB/idProduct" 2>/dev/null)"
+        ok "$HCI present on USB $USB  (${VEN}:${PRD})"
+    else
+        ok "$HCI present (non-USB adapter)"
+    fi
+else
+    bad "no $HCI -- kernel sees no adapter"
+    note "check lsusb / lspci, and that btusb is loaded"
+fi
+
+echo
+echo "4. Radio powered -- THE ONE THAT MATTERS"
+POWERED="$(bluetoothctl show 2>/dev/null | awk '/Powered:/{print $2; exit}')"
+PSTATE="$(bluetoothctl show 2>/dev/null | awk '/PowerState:/{print $2; exit}')"
+if [ "$POWERED" = yes ]; then
+    ok "Powered: yes -- Bluetooth is working"
+elif [ -z "$POWERED" ]; then
+    bad "bluetoothctl returned nothing (is bluetoothd up?)"
+else
+    bad "Powered: $POWERED   (PowerState: ${PSTATE:-unknown})"
+    if [ "$PSTATE" = on ]; then
+        note "the radio was asked to power on and never answered."
+        note "this is a HARDWARE-level failure, not a config problem."
+    fi
+fi
+
+echo
+echo "5. Kernel errors this boot"
+RESET_FAILS="$(journalctl -k -b --no-pager 2>/dev/null \
+    | grep -c "Opcode 0x0c03 failed" || true)"
+XHCI_FAILS="$(journalctl -k -b --no-pager 2>/dev/null \
+    | grep -c "xhci_hcd.*Timeout while waiting" || true)"
+FW_FAILS="$(journalctl -k -b --no-pager 2>/dev/null \
+    | grep -ci "bluetooth.*firmware.*fail\|Direct firmware load for rtl_bt.*failed" || true)"
+
+if [ "${RESET_FAILS:-0}" -gt 0 ]; then
+    bad "$RESET_FAILS x HCI_Reset timeout (opcode 0x0c03, errno -110)"
+    note "the adapter is ignoring the most basic command in the protocol"
+else
+    ok "no HCI_Reset failures"
+fi
+if [ "${XHCI_FAILS:-0}" -gt 0 ]; then
+    bad "$XHCI_FAILS x xHCI controller timeout"
+    note "the USB controller itself is struggling -- suspect a flaky"
+    note "device or hub sharing that controller, not Bluetooth"
+else
+    ok "no xHCI timeouts"
+fi
+[ "${FW_FAILS:-0}" -gt 0 ] \
+    && bad "$FW_FAILS x firmware load failure  (see chapter 15, section 4)" \
+    || ok "no firmware load failures"
+
+echo
+if [ "$POWERED" = yes ]; then
+    echo "Verdict: healthy."
+    if [ "${RESET_FAILS:-0}" -gt 0 ] || [ "${XHCI_FAILS:-0}" -gt 0 ]; then
+        echo "         The errors above are from earlier in this boot. If you"
+        echo "         recovered the adapter since, they are already history."
+        echo "         If you did not, they will likely recur."
+    fi
+else
+    echo "Verdict: NOT working, despite layers 1-3 looking fine."
+    echo "Next:    sudo bluetooth-recover"
+fi
+echo

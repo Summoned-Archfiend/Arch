@@ -107,6 +107,15 @@ dmesg | less
 pacman -Qkk | grep MISSING
 ```
 
+A worked example of this method start to finish is
+[chapter 15](./chapters/15_bluetooth.md). It takes a desktop toggle that
+says "disabled" and no more, and works down through the daemon, the kill
+switch, the kernel's device list, and finally the radio itself, showing at
+each step which layer can be believed and which cannot. The general lesson
+is worth more than the Bluetooth specifics: when a summary tells you
+something is off, find the layers it is summarising, because the fault is
+always in one of them and the summary will not tell you which.
+
 ### 7. Security and Hardening
 
 * [Security](https://wiki.archlinux.org/title/Security)

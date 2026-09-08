@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+#
+# bluetooth-recover -- escalating recovery for a USB Bluetooth adapter that
+# refuses to power on.
+#
+# Symptom this fixes:
+#   bluetoothctl show   ->  Powered: no   /   PowerState: on
+#   journalctl -k -b    ->  Bluetooth: hci0: Opcode 0x0c03 failed: -110
+#   your desktop        ->  toggle greys out or snaps back to "disabled"
+#
+# Four stages, least invasive first. Stops at the first one that works.
+#   1. Rebind the btusb driver.
+#   2. Deauthorise and reauthorise the USB device.
+#   3. Unbind and rebind at the usb driver level (full re-enumeration).
+#   4. Reload the whole btusb module stack.
+#
+# If all four fail the controller is wedged below the level software can
+# reach, and you need a COLD boot. See chapter 15, section 8.
+#
+# Apply: sudo bluetooth-recover
+#
+# See chapter 15: ../chapters/15_bluetooth.md
+
+set -uo pipefail
+
+# After a reset the adapter often comes back with a NEW index (hci0 -> hci1),
+# so never assume hci0. Pick the first real adapter unless told otherwise.
+# Skips hciX:Y child nodes, which are not adapters.
+default_hci() {
+    local d n
+    for d in /sys/class/bluetooth/*; do
+        [ -e "$d" ] || continue
+        n="$(basename "$d")"
+        case "$n" in
+            hci*:*) continue ;;
+            hci[0-9]*) printf '%s\n' "$n"; return 0 ;;
+        esac
+    done
+    return 1
+}
+
+HCI="${1:-$(default_hci || echo hci0)}"
+SETTLE=3
+
+if [ "$EUID" -ne 0 ]; then
+    echo "This needs root. Run: sudo $0" >&2
+    exit 1
+fi
+
+say()  { printf '\n== %s ==\n' "$1"; }
+info() { printf '   %s\n' "$1"; }
+
+powered() { bluetoothctl show 2>/dev/null | awk '/Powered:/{print $2; exit}'; }
+
+# Walk up from the hci device to the USB device that hosts it (the first
+# ancestor with an idVendor file). Prints e.g. "1-3".
+hci_usb_path() {
+    local p
+    p="$(readlink -f "/sys/class/bluetooth/$HCI" 2>/dev/null)" || return 1
+    while [ "$p" != "/" ] && [ -n "$p" ]; do
+        if [ -f "$p/idVendor" ]; then basename "$p"; return 0; fi
+        p="$(dirname "$p")"
+    done
+    return 1
+}
+
+# The btusb driver binds per interface (1-3:1.0, 1-3:1.1), not per device.
+btusb_ifaces() {
+    local usb="$1"
+    find /sys/bus/usb/drivers/btusb -maxdepth 1 -name "${usb}:*" \
+        -printf '%f\n' 2>/dev/null | sort
+}
+
+# bluetoothd may not have noticed the adapter came back, so give it a beat
+# before asking, and treat a successful power-on as the only success signal.
+try_power_on() {
+    sleep "$SETTLE"
+    bluetoothctl power on >/dev/null 2>&1
+    sleep 2
+    [ "$(powered)" = yes ]
+}
+
+win() {
+    printf '\n'
+    printf 'SUCCESS: recovered at stage %s.\n' "$1"
+    bluetoothctl show 2>/dev/null | grep -E "^Controller|Powered:|PowerState:"
+    printf '\nIf you have to run this after every boot, the fix is not this\n'
+    printf 'script. Read chapter 15, section 9, on making it stick.\n\n'
+    exit 0
+}
+
+USB="$(hci_usb_path || true)"
+if [ -z "$USB" ]; then
+    echo "Could not find a USB device behind $HCI." >&2
+    echo "Either the adapter is built in (PCIe / UART) or the kernel has" >&2
+    echo "lost it entirely. Check: lsusb, lspci, dmesg | grep -i blue" >&2
+    exit 1
+fi
+
+echo "Adapter:  $HCI on USB $USB"
+echo "Baseline: Powered: $(powered)"
+
+# ---------------------------------------------------------------- stage 1
+say "Stage 1: rebind the btusb driver"
+mapfile -t IFACES < <(btusb_ifaces "$USB")
+if [ "${#IFACES[@]}" -eq 0 ]; then
+    info "no btusb interfaces bound, skipping"
+else
+    for i in "${IFACES[@]}"; do
+        echo "$i" > /sys/bus/usb/drivers/btusb/unbind 2>/dev/null \
+            && info "unbound $i"
+    done
+    sleep 2
+    for i in "${IFACES[@]}"; do
+        echo "$i" > /sys/bus/usb/drivers/btusb/bind 2>/dev/null \
+            && info "rebound $i"
+    done
+    try_power_on && win 1
+    info "still down"
+fi
+
+# ---------------------------------------------------------------- stage 2
+say "Stage 2: deauthorise and reauthorise the USB device"
+AUTH="/sys/bus/usb/devices/$USB/authorized"
+if [ -w "$AUTH" ]; then
+    echo 0 > "$AUTH"; sleep 2
+    echo 1 > "$AUTH"; sleep 2
+    info "cycled $AUTH"
+    try_power_on && win 2
+    info "still down"
+else
+    info "$AUTH not writable, skipping"
+fi
+
+# ---------------------------------------------------------------- stage 3
+say "Stage 3: force a full USB re-enumeration"
+if [ -w /sys/bus/usb/drivers/usb/unbind ]; then
+    echo "$USB" > /sys/bus/usb/drivers/usb/unbind 2>/dev/null \
+        && info "unbound $USB from the usb driver"
+    sleep 3
+    echo "$USB" > /sys/bus/usb/drivers/usb/bind 2>/dev/null \
+        && info "rebound $USB"
+    try_power_on && win 3
+    info "still down"
+else
+    info "usb driver bind interface unavailable, skipping"
+fi
+
+# ---------------------------------------------------------------- stage 4
+say "Stage 4: reload the btusb module stack"
+info "stopping bluetooth.service"
+systemctl stop bluetooth.service
+# btusb pulls in vendor helper modules; they must come out with it or the
+# reload rebinds against stale firmware state.
+for m in btusb btrtl btintel btbcm btmtk; do
+    modprobe -r "$m" 2>/dev/null && info "removed $m"
+done
+sleep 2
+modprobe btusb && info "reloaded btusb"
+sleep "$SETTLE"
+systemctl start bluetooth.service
+info "restarted bluetooth.service"
+try_power_on && win 4
+
+# ---------------------------------------------------------------- failed
+cat <<'MSG'
+
+FAILED: the adapter is still not answering HCI_Reset.
+
+Every stage above resets the device from the host side. None of them can
+reset the USB host controller itself, and that is the layer now suspect.
+
+Do a COLD boot, not a reboot:
+
+    shut down fully, wait about ten seconds, then power back on
+
+A warm reboot leaves the xHCI controller powered and keeps its wedged
+state across the restart, which is why rebooting appears to do nothing.
+
+Then check for a device that fails to enumerate, since one bad device can
+stall the controller its neighbours share:
+
+    journalctl -k -b | grep -i "xhci_hcd.*Timeout"
+
+Chapter 15, sections 6 and 8, covers both in full.
+MSG
+
+bluetoothctl show 2>/dev/null | grep -E "^Controller|Powered:|PowerState:"
+exit 1

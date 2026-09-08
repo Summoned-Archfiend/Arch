@@ -1,7 +1,7 @@
 # Scripts
 
 Helper scripts referenced by the chapters in this repository. They split
-into three groups:
+into four groups:
 
 * **ISO verification** (Windows / PowerShell, used before install) for
   checking the integrity of the downloaded `Arch` ISO. See
@@ -12,6 +12,9 @@ into three groups:
 * **System hardening** (Linux, used post-install) for tightening kernel,
   network, SSH, and AI-agent surfaces on a workstation. See
   [chapter 11](../chapters/11_hardening.md).
+* **Bluetooth diagnosis** (Linux, used post-install) for working out why
+  a Bluetooth adapter reports itself as disabled and refuses to power on.
+  See [chapter 15](../chapters/15_bluetooth.md).
 
 ## Files
 
@@ -30,6 +33,8 @@ into three groups:
 | `ufw-hardening.sh`              | Hardening    | Idempotent `UFW` rule set. Deny-incoming default with scoped allows for `SSH`, `RDP`, `KDE Connect`, `mDNS`, and Tailscale. Edit `LAN` before running. |
 | `ufw-docker-after.rules.snippet`| Hardening    | `DOCKER-USER` chain block to merge into `/etc/ufw/after.rules` so `UFW` rules actually apply to container ingress. |
 | `claude-settings-hardening.json.snippet` | Hardening | Reference deny-list for an AI coding assistant. Blocks reads of credential stores and writes to persistence surfaces. Adapt the *paths* to whichever agent's config syntax you use. |
+| `bluetooth-check`             | Bluetooth       | Read-only. Walks the four layers that can each claim to be "enabled" and reports which one actually failed. No root needed. |
+| `bluetooth-recover`          | Bluetooth       | Escalating reset for an adapter that will not power on. Four stages, least invasive first, stops at the first that works. Needs root. |
 
 ## ISO verification
 
@@ -120,6 +125,49 @@ The AI-agent deny list (`claude-settings-hardening.json.snippet`) is a
 reference, not a copy-paste install. Adapt it to whichever assistant
 you use.
 
+## Bluetooth diagnosis
+
+Start with the read-only check. It needs no root and changes nothing:
+
+```bash
+./bluetooth-check
+```
+
+Layers one to three passing while layer four fails is the signature this
+pair was written for. It means the daemon, the kill switch, and the kernel's
+view of the hardware are all fine, and the radio itself is not answering.
+
+If layer four fails, try the escalating reset:
+
+```bash
+sudo ./bluetooth-recover
+```
+
+It stops at the first stage that works and tells you which one that was,
+which is useful information in itself. Recovering at stage 1 points at a
+driver hiccup; needing stage 3 or 4 points closer to the hardware.
+
+To keep them on `PATH`:
+
+```bash
+install -Dm755 bluetooth-check   ~/.local/bin/bluetooth-check
+install -Dm755 bluetooth-recover ~/.local/bin/bluetooth-recover
+```
+
+Neither script hardcodes an adapter. They resolve the `USB` device by
+walking up the `sysfs` tree from `/sys/class/bluetooth/hci0` to the first
+ancestor carrying an `idVendor` file, so they work regardless of which port
+your adapter sits on. Both take an optional adapter name as their first
+argument if you have more than one:
+
+```bash
+./bluetooth-check hci1
+```
+
+If `bluetooth-recover` exhausts all four stages, the problem is below the
+level software can reach and you need a cold boot. Chapter 15, section 8,
+explains why a warm reboot specifically does not help.
+
 ## Notes
 
 * The Wacom scripts assume `X11`. None of `xsetwacom`, `xinput`, or
@@ -132,3 +180,7 @@ you use.
 * The hardening scripts ship with placeholder values (`YOUR_USER`,
   `192.168.1.0/24`). They are deliberately wrong; the chapter explains
   how to find your own values before applying.
+* The Bluetooth scripts assume a `USB` adapter, which covers dongles and
+  most desktop motherboards. Built-in `PCIe` or `UART` adapters are seen by
+  `bluetooth-check` but cannot be reset by `bluetooth-recover`, which will
+  say so rather than guess.

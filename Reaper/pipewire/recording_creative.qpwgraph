@@ -1,0 +1,26 @@
+<!DOCTYPE patchbay>
+<patchbay name="recording_creative" version="1.0.4">
+ <items>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Scarlett 2i2 4th Gen Input 1 Mic/Inst/Line" port="Scarlett 2i2 4th Gen:capture_MONO"/>
+   <input node="REAPER" port="REAPER:in1"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Creative Stage [Monitor]" port="Creative Stage:monitor_FR"/>
+   <input node="REAPER" port="REAPER:in2"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="REAPER" port="REAPER:out1"/>
+   <input node="Scarlett 2i2 4th Gen Headphones / Line 1-2" port="Scarlett 2i2 4th Gen:playback_FL"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="REAPER" port="REAPER:out2"/>
+   <input node="Scarlett 2i2 4th Gen Headphones / Line 1-2" port="Scarlett 2i2 4th Gen:playback_FR"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Creative Stage [Monitor]" port="Creative Stage:monitor_FL"/>
+   <input node="REAPER" port="REAPER:in2"/>
+  </item>
+ </items>
+</patchbay>
+
