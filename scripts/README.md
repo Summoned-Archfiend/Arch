@@ -15,6 +15,10 @@ into four groups:
 * **Bluetooth diagnosis** (Linux, used post-install) for working out why
   a Bluetooth adapter reports itself as disabled and refuses to power on.
   See [chapter 15](../chapters/15_bluetooth.md).
+* **Battle.net launching** (Linux, used post-install) for starting a
+  Proton-built Battle.net prefix when the `Lutris` installer leaves no
+  launcher behind, and for the rendering faults in both the client and the
+  game. See [chapter 16](../chapters/16_battlenet.md).
 
 ## Files
 
@@ -35,6 +39,7 @@ into four groups:
 | `claude-settings-hardening.json.snippet` | Hardening | Reference deny-list for an AI coding assistant. Blocks reads of credential stores and writes to persistence surfaces. Adapt the *paths* to whichever agent's config syntax you use. |
 | `bluetooth-check`             | Bluetooth       | Read-only. Walks the four layers that can each claim to be "enabled" and reports which one actually failed. No root needed. |
 | `bluetooth-recover`          | Bluetooth       | Escalating reset for an adapter that will not power on. Four stages, least invasive first, stops at the first that works. Needs root. |
+| `battlenet-launch`           | Battle.net      | Launches Battle.net from a Proton prefix without Lutris or Steam. Sets the `steamuser` profile and Proton's library paths, and refuses to start on top of a stale `wineserver`. Goes in `~/.local/bin`. |
 
 ## ISO verification
 

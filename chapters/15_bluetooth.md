@@ -564,5 +564,5 @@ one is individually simple to check. As with `Git` identity in
 [chapter 14](./14_git_identity_and_credentials.md), it is only the overlap
 that makes it hard.
 
-| [← Previous](./14_git_identity_and_credentials.md) |
-|:--|
+| [← Previous](./14_git_identity_and_credentials.md) | [Next →](./16_battlenet.md) |
+|:--|--:|

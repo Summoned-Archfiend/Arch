@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+#
+# battlenet-launch
+#
+# Launches Battle.net from a Proton-created Wine prefix without going
+# through Lutris or Steam. Written because the Lutris installer can finish
+# building a working prefix and still leave no launcher behind.
+#
+# Goes in ~/.local/bin. Edit PREFIX and PROTON to match your system.
+#
+# See chapter 16 for why each of these lines is here. The short version:
+# USER must match the profile Proton created, and Proton's wine needs to be
+# told where its own libraries live when it is not started by the Proton
+# script.
+
+set -euo pipefail
+
+PREFIX="${BATTLENET_PREFIX:-/mnt/modded/Battle.net}"
+PROTON="${BATTLENET_PROTON:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton10-27}"
+EXE="${BATTLENET_EXE:-Battle.net Launcher.exe}"
+# Overridable so the same launcher can start a game in the prefix directly,
+# for example World of Warcraft, without needing a second copy of all this.
+EXE_DIR="${BATTLENET_EXE_DIR:-$PREFIX/drive_c/Program Files (x86)/Battle.net}"
+
+die() { printf 'battlenet-launch: %s\n' "$1" >&2; exit 1; }
+
+[ -d "$PREFIX" ]   || die "prefix not found: $PREFIX"
+[ -d "$PROTON" ]   || die "proton build not found: $PROTON"
+[ -d "$EXE_DIR" ]  || die "install not found: $EXE_DIR"
+
+export WINEPREFIX="$PREFIX"
+
+# Proton builds its prefixes under the profile name "steamuser", not your
+# Linux username. Without this, Wine creates a second, empty profile and the
+# client loses its saved login and its rendering settings.
+export USER=steamuser
+
+# Disabling locationapi avoids a stall some builds hit on the login page.
+export WINEDLLOVERRIDES="locationapi="
+
+# Part of the combination that got the login page rendering originally.
+# Kept because it costs nothing and removing it was never tested in
+# isolation.
+export WINE_SIMULATE_WRITECOPY=1
+
+export WINEESYNC=1
+export WINEFSYNC=1
+
+# Proton's wine is normally started by the "proton" script, which points it
+# at Proton's bundled libraries. Started bare it resolves against host libs
+# instead. Set these so both paths agree.
+export WINEDLLPATH="$PROTON/files/lib/wine"
+export LD_LIBRARY_PATH="$PROTON/files/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# A wineserver from an earlier launch outlives the client and will happily
+# adopt the next process. If that earlier launch used different settings,
+# the new process attaches to a server it disagrees with and you get a
+# confusing half-broken session.
+#
+# Only a server for THIS prefix matters. Other Wine applications run their
+# own servers and are none of our business, so read each candidate's
+# environment rather than matching on the process name alone.
+server_for_this_prefix() {
+    local pid
+    for pid in $(pgrep -x wineserver 2>/dev/null); do
+        if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+            | grep -qx "WINEPREFIX=$PREFIX"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+if [ "${BATTLENET_FORCE:-0}" != "1" ] && server_for_this_prefix; then
+    printf 'battlenet-launch: a wineserver is already running for this prefix.\n' >&2
+    printf 'Battle.net may already be open. To clear it:\n' >&2
+    printf '  WINEPREFIX=%s %s/files/bin/wineserver -k\n' "$PREFIX" "$PROTON" >&2
+    printf 'Set BATTLENET_FORCE=1 to start anyway.\n' >&2
+    exit 1
+fi
+
+cd "$EXE_DIR"
+exec "$PROTON/files/bin/wine" "$EXE" "$@"
