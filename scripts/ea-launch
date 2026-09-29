@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+#
+# ea-launch
+#
+# Starts the EA app from its Proton prefix. A thin wrapper around
+# proton-launch, which carries all the shared Wine and Proton setup.
+# See chapter 16.
+#
+# Note the install path is "Program Files", not "Program Files (x86)".
+# The EA app is 64 bit, unlike the Battle.net client.
+
+set -euo pipefail
+
+PREFIX="${EA_PREFIX:-/mnt/modded/EA/ea-app}"
+EXE="$PREFIX/drive_c/Program Files/Electronic Arts/EA Desktop/EA Desktop/EADesktop.exe"
+
+exec proton-launch --prefix "$PREFIX" --exe "$EXE" -- "$@"

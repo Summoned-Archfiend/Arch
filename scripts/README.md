@@ -19,6 +19,12 @@ into four groups:
   Proton-built Battle.net prefix when the `Lutris` installer leaves no
   launcher behind, and for the rendering faults in both the client and the
   game. See [chapter 16](../chapters/16_battlenet.md).
+* **Game performance** (Linux, used post-install) for measuring whether a
+  game is CPU or GPU limited rather than guessing at settings.
+  See [chapter 17](../chapters/17_game_performance.md).
+* **Call mic** (Linux, used post-install) for sending your voice and a
+  `DAW`'s output to a browser call as one microphone, since a browser can
+  only pick one input device. See [chapter 19](../chapters/19_call_mic.md).
 
 ## Files
 
@@ -40,6 +46,8 @@ into four groups:
 | `bluetooth-check`             | Bluetooth       | Read-only. Walks the four layers that can each claim to be "enabled" and reports which one actually failed. No root needed. |
 | `bluetooth-recover`          | Bluetooth       | Escalating reset for an adapter that will not power on. Four stages, least invasive first, stops at the first that works. Needs root. |
 | `battlenet-launch`           | Battle.net      | Launches Battle.net from a Proton prefix without Lutris or Steam. Sets the `steamuser` profile and Proton's library paths, and refuses to start on top of a stale `wineserver`. Goes in `~/.local/bin`. |
+| `mangohud.conf.snippet`      | Performance     | `MangoHud` overlay config for `~/.config/MangoHud/MangoHud.conf`. Tuned to answer whether you are CPU or GPU limited, not to look impressive. Per-core load and frame time graph enabled. |
+| `call-mic`                   | Call mic        | Creates a `PipeWire` virtual source, `Call_Mic`, and links a voice mic and a `DAW`'s outputs into it. `activate`, `disable`, `status`, `sources`. Temporary by design; gone on reboot. Goes in `~/.local/bin`. |
 
 ## ISO verification
 
@@ -173,6 +181,34 @@ If `bluetooth-recover` exhausts all four stages, the problem is below the
 level software can reach and you need a cold boot. Chapter 15, section 8,
 explains why a warm reboot specifically does not help.
 
+## Call mic
+
+Install it and tell it which source is your voice. The default source is
+often the wrong input on an audio interface, so do not rely on it:
+
+```bash
+install -Dm755 call-mic ~/.local/bin/call-mic
+call-mic sources
+mkdir -p ~/.config/call-mic
+echo 'VOICE_SOURCE=<your mic source from the list>' > ~/.config/call-mic/config
+```
+
+`~/.local/bin` must be on your `PATH` for the bare `call-mic` command to
+work. [Chapter 19, section 5](../chapters/19_call_mic.md#5-the-script)
+explains how to check and fix that, and why `./` is otherwise needed.
+
+Open your `DAW` first (`REAPER` by default; set `APP=` in the config for
+another `JACK` client), then:
+
+```bash
+call-mic activate
+```
+
+Reload the call page and pick **Call_Mic** as the microphone. `call-mic
+status` shows exactly what is feeding it, and `call-mic disable` removes it.
+Running `activate` again is safe and repairs any missing links, which is
+also how you add the `DAW` if it was not open the first time.
+
 ## Notes
 
 * The Wacom scripts assume `X11`. None of `xsetwacom`, `xinput`, or
@@ -189,3 +225,6 @@ explains why a warm reboot specifically does not help.
   most desktop motherboards. Built-in `PCIe` or `UART` adapters are seen by
   `bluetooth-check` but cannot be reset by `bluetooth-recover`, which will
   say so rather than guess.
+* `call-mic` needs `pipewire-pulse` (for `pactl`) and, for the `DAW` side,
+  `pipewire-jack`. It links the first two output ports of the `DAW`, which
+  is the stereo master on `REAPER`.

@@ -65,6 +65,9 @@ and I suggest you learn the basics via an `OS` like `Windows` or `Ubuntu` first.
 14. [Git Identity and Credential Storage](./chapters/14_git_identity_and_credentials.md)
 15. [Bluetooth Will Not Enable](./chapters/15_bluetooth.md)
 16. [Battle.net and a Window That Will Not Paint](./chapters/16_battlenet.md)
+17. [Knowing What Your Hardware Can Actually Do](./chapters/17_game_performance.md)
+18. [Smaller Fixes Worth Knowing](./chapters/18_smaller_fixes.md)
+19. [Voice and Guitar on One Browser Mic](./chapters/19_call_mic.md)
 
 See also: [Study Guide](./STUDY_GUIDE.md) for a wider learning roadmap, and
 the [scripts](./scripts) folder for helper scripts referenced by the chapters.

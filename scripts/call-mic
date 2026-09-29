@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+#
+# call-mic -- one virtual microphone that carries your voice AND your DAW.
+#
+# Browsers (and so every web call: Tutorful, Meet, Jitsi...) let a site pick
+# exactly one input device. An audio interface shows up as several separate
+# inputs, and an amp-sim guitar is not on any of them: the dry signal enters
+# on one input, but the tone only exists inside the DAW after its plugins.
+#
+# This script creates a PipeWire virtual source called "Call_Mic" and links
+# two things into it:
+#
+#   voice mic source ──┐
+#                      ├──► Call_Mic ──► browser (pick it as the microphone)
+#   DAW outputs 1/2 ───┘
+#
+# The links are copies. The DAW still plays to your headphones, the
+# interface inputs still feed the DAW, and nothing is recorded differently.
+# Call_Mic simply sums the copies into one stereo stream.
+#
+# Nothing here is permanent: the virtual source disappears on reboot or when
+# PipeWire restarts, and `call-mic disable` removes it at any time.
+#
+# Usage:
+#   call-mic activate   create Call_Mic (or repair its links) and link inputs
+#   call-mic disable    remove Call_Mic
+#   call-mic status     show whether it exists and what feeds it
+#   call-mic sources    list input sources, to choose a VOICE_SOURCE
+#
+# Configuration (optional), in ~/.config/call-mic/config:
+#   VOICE_SOURCE=<source name from `call-mic sources`>
+#   APP=<JACK client name of your DAW, default REAPER>
+# Environment variables of the same name override the file.
+#
+# Apply:  install -Dm755 call-mic ~/.local/bin/call-mic
+#
+# See chapter 19: ../chapters/19_call_mic.md
+#
+# Requires: pipewire, pipewire-pulse (pactl), pipewire-jack (for the DAW).
+
+set -euo pipefail
+
+# Node name of the virtual source. Other tools (and the browser's device list,
+# via its description) see it by these names.
+readonly NODE=call_mic
+readonly DESCRIPTION=Call_Mic
+readonly CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/call-mic/config"
+
+# ---------------------------------------------------------------- config ---
+
+# Environment beats the config file, so a one-off test never needs an edit.
+load_config() {
+    local env_voice="${VOICE_SOURCE:-}" env_app="${APP:-}"
+    # shellcheck source=/dev/null
+    [ -f "$CONFIG" ] && . "$CONFIG"
+    VOICE_SOURCE="${env_voice:-${VOICE_SOURCE:-}}"
+    APP="${env_app:-${APP:-REAPER}}"
+
+    # Falling back to the default source keeps the script usable with no
+    # setup at all. It is often the wrong input on a multi-input interface
+    # (the guitar rather than the mic), hence the config file.
+    if [ -z "$VOICE_SOURCE" ]; then
+        VOICE_SOURCE="$(pactl get-default-source)"
+    fi
+}
+
+# --------------------------------------------------------------- queries ---
+
+# awk rather than `grep -q`: grep exits on the first match, which can kill
+# the writer with SIGPIPE and make the pipeline fail under pipefail.
+node_exists() {
+    pactl list short sources | awk -v n="$NODE" '$2 == n {found = 1} END {exit !found}'
+}
+
+# Output ports of a node, one per line, in PipeWire's channel order.
+output_ports() {
+    pw-link -o | awk -v p="$1:" 'index($0, p) == 1'
+}
+
+# The virtual source's input port for one channel (FL or FR).
+node_input() {
+    pw-link -i | awk -v p="$NODE:" -v c="_$1" \
+        'index($0, p) == 1 && substr($0, length($0) - length(c) + 1) == c && !done {print; done = 1}'
+}
+
+# ------------------------------------------------------------ operations ---
+
+create_node() {
+    # A null sink with a Source media class is the simplest virtual mic
+    # PipeWire offers: whatever is linked into it is readable as a mic.
+    pactl load-module module-null-sink \
+        media.class=Audio/Source/Virtual \
+        sink_name="$NODE" \
+        channel_map=front-left,front-right \
+        sink_properties=device.description="$DESCRIPTION" >/dev/null
+
+    # Ports appear asynchronously after the module loads.
+    local _
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ -n "$(node_input FL)" ] && return 0
+        sleep 0.2
+    done
+    echo "call-mic: $NODE was created but its ports never appeared" >&2
+    exit 1
+}
+
+# pw-link refuses a link that already exists. Treating that as success is
+# what makes `activate` safe to run repeatedly.
+link() {
+    pw-link "$1" "$2" 2>/dev/null || true
+}
+
+link_voice() {
+    local ports
+    mapfile -t ports < <(output_ports "$VOICE_SOURCE")
+    if [ "${#ports[@]}" -eq 0 ]; then
+        echo "call-mic: voice source '$VOICE_SOURCE' not found (see: call-mic sources)" >&2
+        return 1
+    fi
+
+    # A mono mic goes to both channels, or the far end hears you in one ear
+    # (or not at all, if the call app keeps only the left channel).
+    if [ "${#ports[@]}" -eq 1 ]; then
+        link "${ports[0]}" "$(node_input FL)"
+        link "${ports[0]}" "$(node_input FR)"
+    else
+        link "${ports[0]}" "$(node_input FL)"
+        link "${ports[1]}" "$(node_input FR)"
+    fi
+}
+
+link_app() {
+    local ports
+    mapfile -t ports < <(output_ports "$APP")
+    if [ "${#ports[@]}" -lt 2 ]; then
+        # Not fatal: voice alone is still a working call mic. Open the DAW
+        # and run activate again to add it.
+        echo "call-mic: '$APP' is not running, linked voice only." >&2
+        echo "          Open $APP, then run: call-mic activate" >&2
+        return 0
+    fi
+    link "${ports[0]}" "$(node_input FL)"
+    link "${ports[1]}" "$(node_input FR)"
+}
+
+unload_node() {
+    local id
+    for id in $(pactl list short modules \
+                | awk -v n="sink_name=$NODE" '/module-null-sink/ && index($0, n) {print $1}'); do
+        pactl unload-module "$id"
+    done
+}
+
+# -------------------------------------------------------------- commands ---
+
+cmd_activate() {
+    node_exists || create_node
+    link_voice
+    link_app
+    cmd_status
+}
+
+cmd_disable() {
+    if node_exists; then
+        unload_node
+        echo "$DESCRIPTION removed"
+    else
+        echo "$DESCRIPTION is not active"
+    fi
+}
+
+cmd_status() {
+    if ! node_exists; then
+        echo "$DESCRIPTION is off"
+        return 0
+    fi
+    echo "$DESCRIPTION is active. Feeding it:"
+    pw-link -l -i | awk -v n="^$NODE:" '
+        $0 ~ n        { port = $0; next }
+        /^ *\|<-/ && port { sub(/^ *\|<- */, ""); print "  " port "  <-  " $0; next }
+                      { port = "" }'
+}
+
+cmd_sources() {
+    # Monitors are other devices' outputs, never a microphone.
+    pactl list short sources | awk -v n="$NODE" '$2 !~ /\.monitor$/ && $2 != n {print "  " $2}'
+}
+
+usage() {
+    sed -n 's/^#   call-mic /  call-mic /p' "$0"
+}
+
+main() {
+    load_config
+    case "${1:-}" in
+        activate) cmd_activate ;;
+        disable)  cmd_disable ;;
+        status)   cmd_status ;;
+        sources)  cmd_sources ;;
+        *)        usage; exit 1 ;;
+    esac
+}
+
+main "$@"

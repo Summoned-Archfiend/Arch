@@ -1,0 +1,50 @@
+# MangoHud configuration for answering "am I CPU or GPU limited?"
+#
+# Goes in ~/.config/MangoHud/MangoHud.conf. See chapter 17.
+#
+# This is deliberately not a showcase overlay. Every line below earns its
+# place by answering a diagnostic question. Anything that only tells you
+# how fast things are, without telling you what is holding them back, is
+# left out.
+
+# The headline number, and the one that matters more than it does.
+fps
+
+# Frame times, as a number and as a graph. The graph is the point: an
+# average of 60 can be a smooth 60 or a sawtooth between 90 and 30, and
+# those feel nothing alike. Spikes show up here and nowhere else.
+frametime
+frame_timing
+
+# The two load figures that answer the actual question. Whichever sits
+# near 100 while the other has room to spare is your limit.
+gpu_stats
+cpu_stats
+gpu_load_change
+cpu_load_change
+
+# Per-core, because a game bound on one thread looks idle in the average.
+# On a 6 core part this is the difference between "the CPU is fine" and
+# "one core is pinned and everything is waiting on it".
+core_load
+
+# Thermals and clocks, to catch throttling masquerading as a slow GPU.
+gpu_temp
+cpu_temp
+gpu_core_clock
+
+# Memory. VRAM tells you whether higher textures are free, which on a card
+# with headroom they usually are.
+vram
+ram
+
+# Keep it out of the way and readable.
+position=top-left
+font_size=20
+background_alpha=0.4
+toggle_hud=Shift_R+F12
+
+# Uncomment to log a session to CSV for comparing settings properly
+# rather than by feel. Toggle with the key below, then read the file.
+# output_folder=/tmp
+# toggle_logging=Shift_L+F2

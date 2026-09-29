@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+#
+# proton-launch
+#
+# Runs a Windows application from a Proton-built Wine prefix, without Steam,
+# Lutris, or the Proton script. Written because the Lutris installers for
+# Battle.net and the EA app both build a working prefix and then fail to
+# leave a launcher behind. See chapter 16.
+#
+# Usage:
+#   proton-launch --prefix DIR --exe /abs/path/to/App.exe [--proton DIR] [-- args...]
+#
+# Equivalent environment variables: PROTON_PREFIX, PROTON_EXE, PROTON_DIR.
+# Anything else you export is passed through to the application, which is how
+# the MangoHud overlay from chapter 17 is enabled (MANGOHUD=1).
+
+set -euo pipefail
+
+PREFIX="${PROTON_PREFIX:-}"
+EXE="${PROTON_EXE:-}"
+PROTON="${PROTON_DIR:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton10-27}"
+
+die() { printf 'proton-launch: %s\n' "$1" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --prefix) PREFIX="${2:-}"; shift 2 ;;
+        --exe)    EXE="${2:-}";    shift 2 ;;
+        --proton) PROTON="${2:-}"; shift 2 ;;
+        --)       shift; break ;;
+        *)        break ;;
+    esac
+done
+
+[ -n "$PREFIX" ] || die "no prefix given (--prefix or PROTON_PREFIX)"
+[ -n "$EXE" ]    || die "no executable given (--exe or PROTON_EXE)"
+[ -d "$PREFIX" ] || die "prefix not found: $PREFIX"
+[ -d "$PROTON" ] || die "proton build not found: $PROTON"
+[ -f "$EXE" ]    || die "executable not found: $EXE"
+
+export WINEPREFIX="$PREFIX"
+
+# Proton builds its prefixes under the profile name "steamuser", not your
+# Linux username. Without this, Wine creates a second, empty profile and the
+# application loses its saved login and settings.
+export USER=steamuser
+
+export WINEESYNC=1
+export WINEFSYNC=1
+
+# Proton's wine is normally started by its own script, which points it at
+# Proton's bundled libraries. Started bare it resolves against host libs
+# instead, which has been observed to leave windows rendering black.
+export WINEDLLPATH="$PROTON/files/lib/wine"
+export LD_LIBRARY_PATH="$PROTON/files/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# A wineserver from an earlier launch outlives the application and will adopt
+# the next process. If that earlier launch used different settings, the new
+# process attaches to a server it disagrees with and you get a confusing
+# half-broken session. Only a server for THIS prefix matters, so read each
+# candidate's environment rather than matching on process name alone.
+server_for_this_prefix() {
+    local pid
+    for pid in $(pgrep -x wineserver 2>/dev/null); do
+        if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+            | grep -qx "WINEPREFIX=$PREFIX"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+if [ "${PROTON_FORCE:-0}" != "1" ] && server_for_this_prefix; then
+    printf 'proton-launch: a wineserver is already running for this prefix.\n' >&2
+    printf 'The application may already be open. To clear it:\n' >&2
+    printf '  WINEPREFIX=%s %s/files/bin/wineserver -k\n' "$PREFIX" "$PROTON" >&2
+    printf 'Set PROTON_FORCE=1 to start anyway.\n' >&2
+    exit 1
+fi
+
+cd "$(dirname "$EXE")"
+exec "$PROTON/files/bin/wine" "$(basename "$EXE")" "$@"

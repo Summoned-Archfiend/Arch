@@ -708,5 +708,5 @@ configuration on shutdown, and a `Wine` profile chosen from your username
 are three unrelated mechanisms, and every one of them will quietly discard
 your work and let you believe you tested something you never tested.
 
-| [← Previous](./15_bluetooth.md) |
-|:--|
+| [← Previous](./15_bluetooth.md) | [Next →](./17_game_performance.md) |
+|:--|--:|
