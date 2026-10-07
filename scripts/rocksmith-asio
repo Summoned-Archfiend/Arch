@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+#
+# rocksmith-asio -- set up and check Rocksmith 2014 on Proton with a real
+# audio interface, through PipeASIO and RS_ASIO.
+#
+# The chain this script builds and checks:
+#
+#   interface input ──► PipeWire ──► PipeASIO ──► RS_ASIO ──► Rocksmith
+#
+# Rocksmith expects its own Real Tone Cable. RS_ASIO makes an ASIO driver look
+# like that cable, and PipeASIO is an ASIO driver that talks to PipeWire from
+# inside Wine. Three things have to be true for that to work under Proton:
+#
+#   1. PipeASIO's files must sit under $HOME, because Proton runs inside a
+#      container that cannot see /usr/lib/wine.
+#   2. The driver must be registered in the game's prefix, through the game's
+#      own Proton (umu-run), never through the host's wine.
+#   3. The game must run with PROTON_USE_WOW64=1 and WINEDLLPATH pointing at
+#      the copy under $HOME. Steam owns those launch options; set them by hand.
+#
+# Usage:
+#   rocksmith-asio status               check every link in the chain, change nothing
+#   rocksmith-asio register             copy the driver under $HOME and register it
+#   rocksmith-asio install-rsasio ZIP   install an RS_ASIO release zip and point it at PipeASIO
+#
+# Environment:
+#   ROCKSMITH_LIBRARY=<steam library>   skip the search through libraryfolders.vdf
+#
+# Apply:  install -Dm755 rocksmith-asio ~/.local/bin/rocksmith-asio
+#
+# See chapter 20: ../chapters/20_rocksmith.md
+#
+# Requires: steam (native, not Flatpak), pipeasio (AUR), umu-launcher
+# (multilib), unzip.
+
+set -euo pipefail
+
+readonly APPID=221680
+readonly STEAM_ROOT="$HOME/.local/share/Steam"
+readonly SYSTEM_DRIVER=/usr/lib/wine
+readonly USER_DRIVER="$HOME/.local/lib/wine"
+
+# The four halves of PipeASIO. The .dll files are the Windows side, the .so
+# files the Linux side. Both .so files live in x86_64-unix: under the new
+# WoW64 mode even the 32-bit driver talks to 64-bit Linux code.
+readonly DRIVER_FILES=(
+    i386-windows/pipeasio32.dll
+    x86_64-windows/pipeasio64.dll
+    x86_64-unix/pipeasio32.so
+    x86_64-unix/pipeasio64.so
+)
+
+# --------------------------------------------------------------- output ---
+
+ok()   { printf '  [ ok ]  %s\n' "$*"; }
+bad()  { printf '  [FAIL]  %s\n' "$*"; FAILED=1; }
+info() { printf '          %s\n' "$*"; }
+die()  { printf 'rocksmith-asio: %s\n' "$*" >&2; exit 1; }
+
+FAILED=0
+
+# ------------------------------------------------------------ discovery ---
+
+# Steam keeps a list of every library folder and which apps live in each.
+# Walk it and return the library that holds Rocksmith.
+find_library() {
+    if [ -n "${ROCKSMITH_LIBRARY:-}" ]; then
+        printf '%s\n' "$ROCKSMITH_LIBRARY"
+        return
+    fi
+    local vdf="$STEAM_ROOT/steamapps/libraryfolders.vdf"
+    [ -f "$vdf" ] || die "no $vdf. Is Steam installed natively (not Flatpak)?"
+    awk -v app="\"$APPID\"" '
+        /^[ \t]*"path"/ {
+            line = $0
+            sub(/^[ \t]*"path"[ \t]*"/, "", line)
+            sub(/"[ \t]*$/, "", line)
+            path = line
+        }
+        $1 == app { print path; exit }
+    ' "$vdf"
+}
+
+resolve_paths() {
+    LIBRARY="$(find_library)"
+    [ -n "$LIBRARY" ] || die "Rocksmith ($APPID) is not in any Steam library."
+    GAME_DIR="$LIBRARY/steamapps/common/Rocksmith2014"
+    COMPAT="$LIBRARY/steamapps/compatdata/$APPID"
+    PFX="$COMPAT/pfx"
+}
+
+# The second line of config_info is a path inside the Proton build that made
+# the prefix. The build's directory name can differ from the name in the
+# `version` file (GE-Proton11-7 against GE-Proton11-7-x86_64), so take the
+# real path rather than guessing from the name.
+runner_dir() {
+    [ -f "$COMPAT/config_info" ] || return 1
+    sed -n 2p "$COMPAT/config_info" | sed 's#/files/.*##'
+}
+
+# Steam's per-user localconfig.vdf holds the launch options. The app id
+# appears several times in that file, sometimes as a plain key and value, so
+# look at every block opened by the bare id and print the first LaunchOptions
+# found directly inside one.
+launch_options() {
+    local vdf
+    for vdf in "$STEAM_ROOT"/userdata/*/config/localconfig.vdf; do
+        [ -f "$vdf" ] || continue
+        awk -v app="\"$APPID\"" '
+            !found && NF == 1 && $1 == app { found = 1; depth = 0; next }
+            found && /\{/ { depth++ }
+            found && /\}/ { depth--; if (depth <= 0) found = 0 }
+            found && depth == 1 && $1 == "\"LaunchOptions\"" {
+                line = $0
+                sub(/^[ \t]*"LaunchOptions"[ \t]*"/, "", line)
+                sub(/"[ \t]*$/, "", line)
+                print line
+                exit
+            }
+        ' "$vdf"
+    done
+}
+
+game_running() { pgrep -f '[R]ocksmith2014\.exe' >/dev/null; }
+
+# ------------------------------------------------------------ ini edits ---
+
+# Set key=value inside one [section] of a Windows ini, keeping its CRLF line
+# endings. Returns non-zero if the key was not found in that section.
+set_ini_key() {
+    local file="$1" section="$2" key="$3" value="$4" tmp ends_newline
+    tmp="$(mktemp)"
+    # RS_ASIO ships its ini without a final newline. awk would add a bare LF
+    # there, so note whether one existed and write the end back the same way.
+    ends_newline="$(tail -c1 "$file" | wc -l)"
+    if awk -v sect="[$section]" -v key="$key" -v value="$value" -v ends_newline="$ends_newline" '
+        {
+            line = $0
+            cr = sub(/\r$/, "", line) ? "\r" : ""
+            out = $0
+            if (line ~ /^\[/) in_sect = (line == sect)
+            else if (in_sect && index(line, key "=") == 1) {
+                out = key "=" value cr
+                done = 1
+            }
+            printf "%s%s", (NR > 1 ? "\n" : ""), out
+        }
+        END {
+            if (ends_newline) printf "\n"
+            exit done ? 0 : 1
+        }
+    ' "$file" >| "$tmp"; then
+        # cat into the original, rather than mv, to keep its owner and mode.
+        # >| because mktemp already created the file, which noclobber refuses.
+        cat "$tmp" >| "$file"
+        command rm -f -- "$tmp"
+    else
+        command rm -f -- "$tmp"
+        return 1
+    fi
+}
+
+# Print the value of key inside [section], without a trailing CR.
+get_ini_key() {
+    local file="$1" section="$2" key="$3"
+    awk -v sect="[$section]" -v key="$key" '
+        { sub(/\r$/, "") }
+        /^\[/ { in_sect = ($0 == sect); next }
+        in_sect && index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }
+    ' "$file"
+}
+
+# ------------------------------------------------------------- commands ---
+
+cmd_status() {
+    resolve_paths
+    echo "Steam library: $LIBRARY"
+
+    echo
+    echo "PipeASIO under \$HOME (visible inside Proton's container)"
+    local f
+    for f in "${DRIVER_FILES[@]}"; do
+        if [ ! -f "$USER_DRIVER/$f" ]; then
+            bad "$f missing. Run: rocksmith-asio register"
+        elif [ -f "$SYSTEM_DRIVER/$f" ] && ! cmp -s "$SYSTEM_DRIVER/$f" "$USER_DRIVER/$f"; then
+            bad "$f differs from $SYSTEM_DRIVER. pipeasio was updated: run register again."
+        else
+            ok "$f"
+        fi
+    done
+
+    echo
+    echo "Prefix"
+    if [ -d "$PFX" ]; then
+        ok "$PFX"
+        local runner
+        if runner="$(runner_dir)" && [ -d "$runner" ]; then
+            ok "built by $(basename "$runner")"
+        else
+            bad "cannot read the Proton build from $COMPAT/config_info"
+        fi
+        if grep -qF '[Software\\ASIO\\PipeASIO]' "$PFX/system.reg"; then
+            ok "PipeASIO registered (64-bit)"
+        else
+            bad "PipeASIO not registered (64-bit)"
+        fi
+        if grep -qF '[Software\\Wow6432Node\\ASIO\\PipeASIO]' "$PFX/system.reg"; then
+            ok "PipeASIO registered (32-bit, the one Rocksmith uses)"
+        else
+            bad "PipeASIO not registered (32-bit). Run: rocksmith-asio register"
+        fi
+    else
+        bad "no prefix. Pick a Proton in Steam and launch the game once."
+    fi
+
+    echo
+    echo "Steam launch options"
+    local opts
+    opts="$(launch_options)"
+    if [ -z "$opts" ]; then
+        bad "none set (or Steam has not saved them yet)"
+    else
+        info "$opts"
+        case "$opts" in *PROTON_USE_WOW64=1*) ok "PROTON_USE_WOW64=1" ;;
+                        *) bad "PROTON_USE_WOW64=1 missing" ;; esac
+        case "$opts" in *"WINEDLLPATH=$USER_DRIVER"*) ok "WINEDLLPATH=$USER_DRIVER" ;;
+                        *) bad "WINEDLLPATH=$USER_DRIVER missing" ;; esac
+        case "$opts" in *%command%*) ok "%command%" ;;
+                        *) bad "%command% missing, so the variables never reach the game" ;; esac
+    fi
+
+    echo
+    echo "RS_ASIO in the game folder"
+    for f in avrt.dll RS_ASIO.dll RS_ASIO.ini; do
+        if [ -f "$GAME_DIR/$f" ]; then ok "$f"; else bad "$f missing. Run: rocksmith-asio install-rsasio <zip>"; fi
+    done
+    if [ -f "$GAME_DIR/RS_ASIO.ini" ]; then
+        local sect val
+        for sect in Asio.Output Asio.Input.0; do
+            val="$(get_ini_key "$GAME_DIR/RS_ASIO.ini" "$sect" Driver)"
+            if [ "$val" = PipeASIO ]; then ok "[$sect] Driver=PipeASIO"; else bad "[$sect] Driver=$val"; fi
+        done
+        val="$(get_ini_key "$GAME_DIR/RS_ASIO.ini" Asio.Input.0 EnableSoftwareEndpointVolumeControl)"
+        if [ "$val" = 0 ]; then
+            ok "[Asio.Input.0] game cannot turn the input down"
+        else
+            bad "[Asio.Input.0] EnableSoftwareEndpointVolumeControl=$val. The game sets it low and the guitar goes quiet."
+        fi
+    fi
+    if [ -f "$GAME_DIR/RS_ASIO-log.txt" ]; then
+        ok "RS_ASIO-log.txt exists, so RS_ASIO loaded at least once"
+    else
+        info "no RS_ASIO-log.txt yet. Normal before the first launch with RS_ASIO."
+    fi
+
+    echo
+    echo "Rocksmith.ini"
+    if [ -f "$GAME_DIR/Rocksmith.ini" ]; then
+        local key
+        for key in ExclusiveMode Win32UltraLowLatencyMode; do
+            val="$(get_ini_key "$GAME_DIR/Rocksmith.ini" Audio "$key")"
+            if [ "$val" = 1 ]; then ok "$key=1"; else bad "$key=$val (RS_ASIO wants 1)"; fi
+        done
+    else
+        info "not created yet. The game writes it on first launch."
+    fi
+
+    echo
+    echo "PipeWire"
+    if game_running; then
+        if pw-link -l 2>/dev/null | grep -q 'Rocksmith2014:in'; then
+            ok "game input is linked:"
+            pw-link -l | grep -A2 '^Rocksmith2014:in' | sed 's/^/          /'
+        else
+            bad "game is running but its input is not linked to anything"
+        fi
+    else
+        info "game not running. Start it to check its links."
+    fi
+
+    echo
+    if [ "$FAILED" -eq 0 ]; then echo "Everything checked is in place."; else echo "Fix the [FAIL] lines above, top to bottom."; fi
+    return "$FAILED"
+}
+
+cmd_register() {
+    resolve_paths
+    command -v pipeasio-register >/dev/null || die "pipeasio is not installed. yay -S pipeasio"
+    command -v umu-run >/dev/null || die "umu-run is missing. sudo pacman -S umu-launcher"
+    [ -d "$PFX" ] || die "no prefix at $PFX. Pick a Proton in Steam, launch the game once, quit, then rerun."
+    game_running && die "Rocksmith is running. Quit it first, the prefix must be idle."
+
+    local runner
+    runner="$(runner_dir)" || die "cannot read $COMPAT/config_info"
+    [ -d "$runner" ] || die "the Proton that built the prefix is gone: $runner"
+
+    echo "Copying PipeASIO under \$HOME, where Proton's container can see it"
+    local f
+    for f in "${DRIVER_FILES[@]}"; do
+        [ -f "$SYSTEM_DRIVER/$f" ] || die "$SYSTEM_DRIVER/$f missing. Reinstall pipeasio."
+        if cmp -s "$SYSTEM_DRIVER/$f" "$USER_DRIVER/$f" 2>/dev/null; then
+            ok "$f (already current)"
+        else
+            install -Dm644 "$SYSTEM_DRIVER/$f" "$USER_DRIVER/$f"
+            ok "$f (copied)"
+        fi
+    done
+
+    echo
+    echo "Registering in $PFX through $(basename "$runner")"
+    env WINEPREFIX="$PFX" \
+        WINE=umu-run \
+        PROTONPATH="$runner" \
+        GAMEID="umu-$APPID" \
+        PROTON_USE_WOW64=1 \
+        WINEDLLPATH="$USER_DRIVER" \
+        pipeasio-register
+
+    echo
+    if grep -qF '[Software\\Wow6432Node\\ASIO\\PipeASIO]' "$PFX/system.reg"; then
+        echo "Registered. The 32-bit entry Rocksmith needs is present."
+    else
+        die "registration ran but the 32-bit entry is missing. Read the output above."
+    fi
+}
+
+cmd_install_rsasio() {
+    local zip="${1:-}"
+    [ -n "$zip" ] || die "usage: rocksmith-asio install-rsasio <release zip>"
+    [ -f "$zip" ] || die "no such file: $zip"
+    resolve_paths
+    [ -d "$GAME_DIR" ] || die "no game folder at $GAME_DIR"
+    game_running && die "Rocksmith is running. Quit it first."
+
+    local tmp
+    tmp="$(mktemp -d)"
+    unzip -q -o "$zip" -d "$tmp"
+    local f
+    for f in avrt.dll RS_ASIO.dll RS_ASIO.ini; do
+        [ -f "$tmp/$f" ] || die "$f is not in $zip. Is it an RS_ASIO release?"
+    done
+
+    install -m644 "$tmp/avrt.dll" "$tmp/RS_ASIO.dll" "$GAME_DIR/"
+    if [ -f "$GAME_DIR/RS_ASIO.ini" ]; then
+        # Keep an existing ini and only change the keys below, so any other
+        # setting the user tuned survives an upgrade.
+        command cp -f -- "$GAME_DIR/RS_ASIO.ini" "$GAME_DIR/RS_ASIO.ini.bak-$(date +%Y%m%d-%H%M%S)"
+        echo "Kept the existing RS_ASIO.ini (backed up first)."
+    else
+        install -m644 "$tmp/RS_ASIO.ini" "$GAME_DIR/RS_ASIO.ini"
+    fi
+    command rm -rf -- "$tmp"
+
+    set_ini_key "$GAME_DIR/RS_ASIO.ini" Asio.Output  Driver PipeASIO || die "no [Asio.Output] Driver key"
+    set_ini_key "$GAME_DIR/RS_ASIO.ini" Asio.Input.0 Driver PipeASIO || die "no [Asio.Input.0] Driver key"
+    set_ini_key "$GAME_DIR/RS_ASIO.ini" Asio.Input.0 Channel 0       || die "no [Asio.Input.0] Channel key"
+    # Rocksmith sets its input volume very low. With this on, RS_ASIO applies
+    # that volume to the guitar and the game stops hearing it.
+    set_ini_key "$GAME_DIR/RS_ASIO.ini" Asio.Input.0 EnableSoftwareEndpointVolumeControl 0 \
+        || die "no [Asio.Input.0] EnableSoftwareEndpointVolumeControl key"
+
+    echo "RS_ASIO installed in $GAME_DIR"
+    echo "Output and input 0 use PipeASIO; input 0 is the first channel PipeASIO offers."
+}
+
+case "${1:-}" in
+    status)         cmd_status ;;
+    register)       cmd_register ;;
+    install-rsasio) shift; cmd_install_rsasio "$@" ;;
+    *)
+        sed -n '/^# Usage:/,/^# Environment:/p' "$0" | sed '$d; s/^# \{0,1\}//'
+        exit 2
+        ;;
+esac

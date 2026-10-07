@@ -1,4 +1,4 @@
-# Voice and Guitar on One Browser Mic
+# Voice, Guitar and Camera on a Browser Call
 
 This chapter is about a problem that shows up the first time you try to
 take a music lesson over a video call. You have an audio interface with a
@@ -15,8 +15,12 @@ is the thing you want to send. So you build the device you want.
 This chapter explains why the list looks the way it does, how `PipeWire`
 lets you create a virtual microphone and wire real sources into it, and how
 to get the levels right so the person on the other end hears both your
-voice and your guitar. A script at the end, `call-mic`, packages the whole
-thing into two commands.
+voice and your guitar. A script, `call-mic`, packages the whole thing into
+two commands.
+
+Section 8 applies the same idea to video: a second script, `cam-rotate`,
+turns the picture from a webcam lying on its side the right way up, and
+the section explains why that may be less useful than it sounds.
 
 ---
 
@@ -318,6 +322,17 @@ amixer -c Gen sget 'Line In 2 Gain'
 amixer -c Gen sset 'Line In 2 Gain' 40
 ```
 
+The trap is that the two signals are **added**. A `DAW` with a limiter on
+its master bus is usually set to peak just under 0 dBFS, which is right for
+your headphones. Add a voice on top and the sum goes over, and the call
+site's meter sits in the red. On the machine this chapter was written from,
+the guitar alone peaked at -1 dBFS and talking over it reached +0.6 dBFS.
+The fix is to pull the `DAW`'s master fader down about 10 dB (on `REAPER`
+master FX run before the fader, so the limiter is unaffected) and turn the
+interface's headphone knob up to compensate. Combined peaks then sat
+around -10 dBFS with nothing clipping. The guitar was also much louder than
+the voice before, so this fixed the balance too.
+
 Aim for speech peaks around -20 to -15 dBFS. Louder leaves no headroom for
 a laugh or a shout; much quieter and the call's automatic gain control will
 pump the noise floor up between phrases.
@@ -351,7 +366,176 @@ teacher will hear.
 
 ---
 
-## 8. Quick Reference
+## 8. A Camera Turned on Its Side
+
+For a guitar lesson, a portrait frame can seem like a better fit: head at
+the top, guitar body in the middle, picking hand at the bottom. The obvious
+way to get one is to turn the webcam on its side. The picture then arrives
+**sideways**, and there is usually nothing to fix it with. Webcams rarely
+have a rotate control, and browsers and call sites do not rotate video.
+
+You can see what a camera does offer with `v4l2-ctl`, from the
+`v4l-utils` package:
+
+```bash
+v4l2-ctl --list-devices
+v4l2-ctl -d /dev/video0 --list-ctrls
+```
+
+Look for `rotate`, `horizontal_flip` or `vertical_flip`. The
+`Insta360 Link 2` this chapter was written with has none of them. It offers
+brightness, white balance, focus, pan, tilt and zoom, and nothing else.
+
+### The same trick, for video
+
+The fix is the video version of section 2: make a device that does not
+exist, and feed it what you want. The kernel module `v4l2loopback` creates
+a virtual camera. Anything that writes frames into it appears to every app
+as an ordinary webcam. `ffmpeg` reads the real camera, turns each frame 90
+degrees, and writes the result into the virtual one:
+
+```
+real camera ──► ffmpeg (transpose 90°) ──► /dev/video10 "Rotated Cam" ──► browser
+```
+
+Install the module. It is in the official repositories, and it builds
+through `DKMS` like any other out-of-tree module, so your kernel headers
+must match your running kernel:
+
+```bash
+sudo pacman -S v4l2loopback-dkms
+```
+
+Load it by hand once, to see what each option is for:
+
+```bash
+sudo modprobe v4l2loopback devices=1 video_nr=10 \
+    card_label="Rotated Cam" exclusive_caps=1
+```
+
+`video_nr=10` fixes the device at `/dev/video10`, well clear of real
+cameras. `card_label` is the name call sites show. `exclusive_caps=1` is
+the one that matters most: without it the device presents itself as both
+an input and an output, and `Chromium`-based browsers (Chrome, Brave, Edge)
+refuse to list it as a camera at all.
+
+Then feed it:
+
+```bash
+ffmpeg -f v4l2 -input_format mjpeg -video_size 1920x1440 -framerate 30 -i /dev/video0 \
+       -vf "transpose=1,format=yuv420p" -f v4l2 /dev/video10
+```
+
+`transpose=1` turns the picture 90 degrees clockwise and `transpose=2`
+anticlockwise. Which one you need depends on which way the camera lies. If
+the result is upside down, you picked the other one.
+
+### Only one program can stream from a camera
+
+While `ffmpeg` runs, it has the real camera, and nothing else can open it.
+Try and you get this:
+
+```
+Error opening input: Device or resource busy
+```
+
+That works both ways. If the call site already has the real camera open,
+`ffmpeg` cannot start, and the call site shows its own version of the
+error, usually telling you to close Zoom or Teams. So the order is: stop
+the camera in the call site (or close the tab), start the rotation, then
+pick **Rotated Cam** in the call site. To go back, stop the rotation and
+pick the real camera again. Changing a camera's *settings* is different:
+brightness, zoom and so on can be changed while another program is
+streaming.
+
+### The script
+
+[`scripts/cam-rotate`](../scripts/cam-rotate) wraps the steps above:
+loading the module if it is not loaded, finding the camera, starting
+`ffmpeg` in the background, and reporting the log if it fails to start.
+
+```bash
+install -Dm755 scripts/cam-rotate ~/.local/bin/cam-rotate
+```
+
+| Command | What it does |
+| ------- | ------------ |
+| `cam-rotate start` | Rotates clockwise into `Rotated Cam`. Asks for `sudo` the first time after each boot, to load the module. |
+| `cam-rotate start ccw` | The same, anticlockwise. |
+| `cam-rotate stop` | Stops `ffmpeg`. The real camera is free again. |
+| `cam-rotate status` | Shows whether it is running. |
+
+By default it uses the first real camera it finds. With more than one,
+name part of the one you want:
+
+```bash
+CAM_ROTATE_CAMERA=Insta360 cam-rotate start
+```
+
+To skip the `sudo` prompt, load the module at boot with the same options:
+
+```bash
+echo v4l2loopback | sudo tee /etc/modules-load.d/v4l2loopback.conf
+echo 'options v4l2loopback devices=1 video_nr=10 card_label="Rotated Cam" exclusive_caps=1' \
+    | sudo tee /etc/modprobe.d/v4l2loopback.conf
+```
+
+### Resolution and CPU
+
+The script captures at **1920x1440**, not 1920x1080 and not 4K, for two
+reasons.
+
+A 16:9 size crops the top and bottom of the sensor. On its side, that crop
+becomes the *width* of your picture, so the rotated view looks zoomed in.
+A 4:3 size uses more of the sensor and gives a noticeably wider view.
+
+4K would use even more, but webcams send high resolutions as `MJPEG`, and
+`ffmpeg` has to decode every frame before it can rotate it. Decoding 4K
+continuously is real CPU load. If you are also running a `DAW` at a small
+buffer, as in the earlier sections, that load is exactly what causes audio
+dropouts.
+
+### Why it may not be worth it
+
+Try it before you rely on it, because the result can be disappointing, and
+the reason is not the camera.
+
+Almost every call site shows video in a **landscape** box. A portrait
+picture has to fit inside that box, so it is scaled down until its height
+fits, with empty space either side. On the machine this chapter was written
+from, the rotated view came out noticeably *smaller* than the sideways,
+unrotated picture had been, which rather defeated the point. Some sites
+crop instead of shrinking, and then you lose the top and bottom of the
+frame instead.
+
+So a portrait frame only pays off when the far end shows it as portrait,
+for example on a phone held upright. For a lesson on a laptop screen, you
+will often do better with the camera upright, pulled back or zoomed out,
+and angled down so the guitar is in shot.
+
+### Cameras that track you
+
+Some webcams, including the `Insta360 Link` series, have motorised gimbals
+and follow your face. Their tracking assumes the camera is upright. On its
+side, the camera moves along the wrong axis, overshoots, corrects, and the
+picture shakes continuously. Turn tracking off before turning the camera.
+
+On the `Insta360` that is a vendor setting that `v4l2-ctl` cannot reach.
+The manufacturer's controller app is Windows and macOS only, but a
+community tool,
+[`linkctl`](https://github.com/vrwallace/Insta360-Link-1-and-2-Controller-for-Linux),
+talks to the camera's vendor controls directly:
+
+```bash
+linkctl tracking off
+```
+
+It is a small project. Read its source before building it, as you should
+with anything that sends raw commands to a USB device.
+
+---
+
+## 9. Quick Reference
 
 | Symptom | Likely cause |
 | ------- | ------------ |
@@ -360,10 +544,17 @@ teacher will hear.
 | Far end hears voice only | `DAW` was not open at `activate`. Run it again. |
 | Far end hears dry guitar | Voice source is set to the guitar input (section 4). |
 | Voice in one ear only | Mono mic linked to one channel. `call-mic` links both. |
+| Call site meter in the red | `DAW` limited to near 0 dBFS plus voice on top. Pull the master fader down (section 6). |
 | Condenser mic silent | 48V off, or gain near 0 dB (section 6). |
 | Sustained notes fade out | Browser noise suppression (section 7). |
 | Short gaps of silence in everything | Not this chapter: the `DAW` is missing its audio deadline. Watch its `ERR` column in `pw-top`. |
 | `Call_Mic` gone after a reboot | Expected. It is temporary by design. |
+| Picture sideways | Camera on its side. Use `cam-rotate` (section 8). |
+| `Device or resource busy` | Another program has the camera. Stop it in the call site first. |
+| Call site cannot connect to the camera | `cam-rotate` has the real camera. Pick `Rotated Cam`. |
+| `Rotated Cam` not listed in the browser | Module loaded without `exclusive_caps=1`. |
+| Rotated view smaller than expected | Portrait picture in a landscape video box (section 8). |
+| Rotated picture shakes | Face tracking is on. Turn it off. |
 
 ---
 
@@ -383,9 +574,17 @@ node is a few lines of configuration, and a link is a single command. Once
 that clicks, a whole category of "the app will not let me choose X" stops
 being a limitation of the app and becomes ten seconds of wiring.
 
+The camera works the same way. The browser offers the webcams you have,
+exactly as they are, and nothing else. `v4l2loopback` is the video
+equivalent of a virtual source: once you can make a camera, rotating one is
+a single `ffmpeg` filter. What no amount of wiring changes is the other
+end. A call site that shows every picture in a landscape box will shrink
+your portrait one, and it is worth finding that out before building
+anything, not after.
+
 The trap to remember is the default source. It is the one assumption that
 fails silently, sends the wrong signal, and sounds almost right. Name your
 sources explicitly and it cannot bite you.
 
-| [← Previous](./18_smaller_fixes.md) |
-|:--|
+| [← Previous](./18_smaller_fixes.md) | [Next →](./20_rocksmith.md) |
+|:--|--:|

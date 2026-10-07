@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+#
+# boot-check -- explain a slow boot, or a login screen that never appeared,
+# from the journal of that boot. Read-only. Changes nothing.
+#
+# It answers four questions, in the order they tend to go wrong:
+#
+#   1. How long did the boot take, and what was the display manager waiting on?
+#   2. Did a USB device fail to enumerate? The kernel retries a silent device
+#      for about a minute, and other devices on the same hub queue behind it.
+#   3. Did the login screen (the greeter) crash? Most display managers do not
+#      relaunch a crashed greeter, which leaves a black screen.
+#   4. Does the display manager's setup script actually exist and run?
+#
+# Usage:
+#   boot-check            check the current boot
+#   boot-check -1         check the previous boot (any journalctl -b offset)
+#
+# Apply:  install -Dm755 boot-check ~/.local/bin/boot-check
+#
+# See chapter 21: ../chapters/21_slow_boot_and_login.md
+#
+# Requires: systemd (journalctl, systemd-analyze, coredumpctl). Run as a user
+# in the `wheel` or `systemd-journal` group, or with sudo, to read the system
+# journal.
+
+set -uo pipefail
+
+BOOT="${1:-0}"
+[[ $BOOT =~ ^(-?[0-9]+)$ ]] || {
+    sed -n '/^# Usage:/,/^# Apply:/p' "$0" | sed '$d; s/^# \{0,1\}//'
+    exit 2
+}
+
+# --------------------------------------------------------------- output ---
+
+ok()   { printf '  [ ok ]  %s\n' "$*"; }
+bad()  { printf '  [WARN]  %s\n' "$*"; }
+info() { printf '          %s\n' "$*"; }
+head_() { printf '\n%s\n' "$*"; }
+
+journal() { journalctl -b "$BOOT" --no-pager -q "$@" 2>/dev/null; }
+
+journal -n1 >/dev/null || { echo "boot-check: no journal for boot $BOOT" >&2; exit 1; }
+DM=$(systemctl show -p Id --value display-manager.service 2>/dev/null)
+DM=${DM:-display-manager.service}
+
+echo "Boot $BOOT, started $(journal -o short-iso | head -n1 | cut -d' ' -f1)"
+
+# ----------------------------------------------------------- 1. timing ---
+
+head_ "1. Startup time"
+finished=$(journal _PID=1 | grep -m1 'Startup finished')
+if [[ -n $finished ]]; then
+    info "${finished#*Startup finished in }"
+    user=$(grep -oP '\+ \K[0-9a-z. ]+(?= \(userspace\))' <<<"$finished")
+    [[ $user == *min* ]] && bad "userspace took over a minute: something waited on a timeout"
+else
+    bad "systemd never reported 'Startup finished' (boot hung, or was cut short)"
+fi
+
+if [[ $BOOT == 0 || $BOOT == -0 ]]; then
+    info "What $DM waited on (slowest link is the one with the large +time):"
+    systemd-analyze critical-chain "$DM" --no-pager 2>/dev/null \
+        | sed '1,2d; /^$/d' | sed 's/^/          /' | head -n 12
+else
+    info "(critical-chain only works on the current boot; reboot and run"
+    info " boot-check with no argument to see what the display manager waited on)"
+fi
+
+# --------------------------------------------------- 2. USB enumeration ---
+
+head_ "2. USB devices that failed to enumerate"
+mapfile -t ports < <(journal -k \
+    | grep -oP 'usb \K[0-9]+-[0-9.]+(?=: (device descriptor read|device not accepting address))' \
+    | sort -u)
+if ((${#ports[@]} == 0)); then
+    ok "every USB device answered"
+else
+    for p in "${ports[@]}"; do
+        n=$(journal -k | grep -cE "usb $p: (device descriptor read|device not accepting address)")
+        first=$(journal -k -o short-precise | grep -m1 "usb $p: device descriptor read" | awk '{print $3}')
+        last=$(journal -k -o short-precise | grep "usb $p: device" | tail -n1 | awk '{print $3}')
+        bad "port $p: $n failed attempts, $first to $last"
+        hub=${p%.*} portnum=${p##*.}
+        [[ $hub == "$p" ]] && continue      # plugged straight into a root port
+        hubname=$(cat "/sys/bus/usb/devices/$hub/product" 2>/dev/null)
+        info "it is port $portnum of hub $hub${hubname:+ ($hubname)}"
+        for sib in /sys/bus/usb/devices/"$hub".[0-9]*; do
+            [[ -e $sib/product || -e $sib/idVendor ]] || continue
+            name=$(cat "$sib/product" 2>/dev/null || echo '?')
+            info "  ${sib##*/} is working: $name ($(cat "$sib/idVendor"):$(cat "$sib/idProduct"))"
+        done
+        [[ -e /sys/bus/usb/devices/$p ]] \
+            && info "  $p is present now, so it only fails while booting" \
+            || info "  $p is still not enumerated: unplug it, or try another port"
+    done
+fi
+
+slow=$(journal -u systemd-udevd | grep -c 'is taking a long time')
+((slow > 0)) && bad "udev reported $slow device(s) taking a long time to set up"
+
+# ------------------------------------------------------ 3. the greeter ---
+
+head_ "3. Login screen ($DM)"
+crashes=$(journal | grep -E 'Process [0-9]+ \([^)]*greeter[^)]*\) .* dumped core')
+if [[ -z $crashes ]]; then
+    ok "no greeter crash in this boot"
+else
+    while read -r line; do bad "${line#*]: }"; done <<<"$crashes"
+    frame=$(journal | grep -A3 'greeter.*dumped core' | grep -oP '#0 .*\(\K[^ +)]+' | head -n1)
+    [[ -n $frame ]] && info "it crashed inside: $frame"
+    [[ $frame == *nvidia* || $frame == *mesa* || $frame == *dri* ]] \
+        && info "that is the graphics driver: see chapter 21, section 4"
+    journal -u "$DM" | grep -qiE 'greeter (stopped|exited|crashed)' \
+        && ! journal -u "$DM" | grep -i 'greeter' | tail -n1 | grep -qi 'started' \
+        && bad "$DM did not relaunch it: the screen stayed black"
+fi
+
+# ----------------------------------------------------- 4. setup script ---
+
+head_ "4. Display setup script"
+if [[ $DM == sddm.service ]]; then
+    # Later files override earlier ones, so the last DisplayCommand wins.
+    cmd=$(cat /usr/lib/sddm/sddm.conf.d/*.conf /etc/sddm.conf.d/*.conf /etc/sddm.conf 2>/dev/null \
+        | grep -E '^DisplayCommand=' | tail -n1 | cut -d= -f2-)
+    cmd=${cmd:-/usr/share/sddm/scripts/Xsetup}
+    if [[ -d $cmd ]]; then
+        bad "DisplayCommand points at a directory: $cmd"
+        info "a path split over two lines in a conf file does this"
+    elif [[ ! -x $cmd ]]; then
+        bad "DisplayCommand is not executable: $cmd"
+    else
+        ok "DisplayCommand runs $cmd"
+        grep -q xrandr "$cmd" && info "it calls xrandr: check its outputs still exist (xrandr --query)"
+    fi
+    used=$(journal -u sddm | grep -oP 'Running display setup script +"\K[^"]*' | tail -n1)
+    [[ -n $used && $used != "$cmd" ]] && info "this boot ran: $used"
+else
+    info "only sddm is checked here; $DM is in use"
+fi
+
+exit 0

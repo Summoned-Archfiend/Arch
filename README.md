@@ -67,7 +67,10 @@ and I suggest you learn the basics via an `OS` like `Windows` or `Ubuntu` first.
 16. [Battle.net and a Window That Will Not Paint](./chapters/16_battlenet.md)
 17. [Knowing What Your Hardware Can Actually Do](./chapters/17_game_performance.md)
 18. [Smaller Fixes Worth Knowing](./chapters/18_smaller_fixes.md)
-19. [Voice and Guitar on One Browser Mic](./chapters/19_call_mic.md)
+19. [Voice, Guitar and Camera on a Browser Call](./chapters/19_call_mic.md)
+20. [Rocksmith 2014 Through a Real Audio Interface](./chapters/20_rocksmith.md)
+21. [A Slow Boot and a Login Screen That Never Arrived](./chapters/21_slow_boot_and_login.md)
+22. [RGB Lighting and Fan Control with Prism](./chapters/22_rgb_and_fan_control.md)
 
 See also: [Study Guide](./STUDY_GUIDE.md) for a wider learning roadmap, and
 the [scripts](./scripts) folder for helper scripts referenced by the chapters.

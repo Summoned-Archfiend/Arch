@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+#
+# rgb-check -- show what is in place for driving RGB lighting and fans, and
+# what is likely to fight over them. Read-only. Changes nothing.
+#
+# It answers five questions:
+#
+#   1. Which lighting and fan controllers are on the USB bus right now?
+#   2. Has the kernel loaded a fan driver for them, and which headers have fans?
+#   3. Can your user open them without root?
+#   4. Is OpenRGB running, and is it set to detect the Corsair controllers?
+#   5. Is anything else (a service, a script, a GUI) also driving them?
+#
+# Usage:
+#   rgb-check
+#
+# Apply:  install -Dm755 rgb-check ~/.local/bin/rgb-check
+#
+# See chapter 22: ../chapters/22_rgb_and_fan_control.md
+#
+# Requires: usbutils (lsusb). Uses liquidctl and OpenRGB's config if present.
+
+set -uo pipefail
+
+ok()   { printf '  [ ok ] %s\n' "$*"; }
+warn() { printf '  [warn] %s\n' "$*"; }
+info() { printf '         %s\n' "$*"; }
+head_() { printf '\n%s\n' "$*"; }
+
+CORSAIR=1b1c
+OPENRGB_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/OpenRGB/OpenRGB.json"
+OPENRGB_PORT=6742
+
+head_ "1. Controllers on the USB bus"
+corsair=$(lsusb -d "$CORSAIR:" 2>/dev/null)
+if [[ -n $corsair ]]; then
+    while IFS= read -r line; do ok "${line#*ID }"; done <<< "$corsair"
+else
+    warn "no Corsair USB devices found"
+    info "an AIO whose pump light flashes red and blue has usually dropped off USB;"
+    info "a full power-off, not a reboot, brings it back"
+fi
+
+head_ "2. Kernel fan drivers"
+found_fans=0
+for dir in /sys/class/hwmon/hwmon*; do
+    name=$(<"$dir/name")
+    labels=("$dir"/fan*_label)
+    [[ -e ${labels[0]} ]] || continue
+    found_fans=1
+    ok "$name ($dir)"
+    for label in "${labels[@]}"; do
+        input=${label%_label}_input
+        rpm=$(cat "$input" 2>/dev/null || echo "?")
+        info "$(<"$label"): $rpm RPM"
+    done
+done
+(( found_fans )) || warn "no hwmon driver reports labelled fan headers"
+
+head_ "3. Device permissions"
+for node in /sys/class/hidraw/hidraw*; do
+    uevent="$node/device/uevent"
+    [[ -r $uevent ]] || continue
+    grep -qi "HID_ID=.*0000${CORSAIR^^}" "$uevent" || continue
+    dev="/dev/$(basename "$node")"
+    product=$(grep -m1 '^HID_NAME=' "$uevent" | cut -d= -f2-)
+    if [[ -r $dev && -w $dev ]]; then
+        ok "$dev ($product) is readable and writable"
+    else
+        warn "$dev ($product) needs root; install the openrgb or liquidctl udev rules and log in again"
+    fi
+done
+
+if command -v liquidctl >/dev/null; then
+    head_ "   liquidctl sees"
+    liquidctl list 2>/dev/null | sed 's/^/         /' || warn "liquidctl list failed"
+fi
+
+head_ "4. OpenRGB"
+if pgrep -x openrgb >/dev/null; then
+    args=$(pgrep -a -x openrgb | head -n1)
+    if [[ $args == *--server* && $args != *--gui* ]]; then
+        ok "a headless OpenRGB server is running"
+    else
+        warn "the OpenRGB window is open; it reinitialises every controller it detects"
+    fi
+else
+    info "OpenRGB is not running"
+fi
+if (exec 3<>"/dev/tcp/127.0.0.1/$OPENRGB_PORT") 2>/dev/null; then
+    ok "something is listening on the SDK port $OPENRGB_PORT"
+fi
+if [[ -r $OPENRGB_CONFIG ]]; then
+    for detector in "Corsair Commander Pro" "Corsair Hydro H100i Platinum" "Corsair Hydro H115i Platinum"; do
+        if grep -q "\"$detector\": *false" "$OPENRGB_CONFIG"; then
+            ok "OpenRGB will not detect: $detector"
+        elif grep -q "\"$detector\": *true" "$OPENRGB_CONFIG"; then
+            info "OpenRGB detects: $detector"
+        fi
+    done
+else
+    info "no OpenRGB configuration yet"
+fi
+
+head_ "5. Other things driving the hardware"
+competing=$(systemctl --user list-units --type=service --state=active --no-legend 2>/dev/null |
+    grep -Ei 'rgb|liquidctl|fan|pump' | awk '{print $1}')
+if [[ -n $competing ]]; then
+    while IFS= read -r unit; do warn "user service $unit is active"; done <<< "$competing"
+else
+    ok "no user services that look like lighting or fan control"
+fi
+if pgrep -f 'prism' >/dev/null && pgrep -af 'prism' | grep -qv rgb-check; then
+    ok "Prism is running"
+else
+    info "Prism is not running"
+fi

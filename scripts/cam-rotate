@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+#
+# cam-rotate -- a virtual webcam that shows a sideways camera upright.
+#
+# Turning a webcam on its side gives a portrait frame, but the picture
+# arrives sideways. Most webcams have no rotate control, and browsers and
+# call sites do not rotate video either. So ffmpeg reads the real camera,
+# turns each frame 90 degrees, and writes it to a v4l2loopback device that
+# call sites list as "Rotated Cam".
+#
+#   real camera ──► ffmpeg (transpose 90°) ──► /dev/video10 "Rotated Cam" ──► browser
+#
+# While it runs, ffmpeg holds the real camera. Only one program can stream
+# from a camera at a time, so call sites must pick "Rotated Cam". Stop it to
+# use the real camera directly again.
+#
+# Usage:
+#   cam-rotate start [cw|ccw]   rotate clockwise (default) or anticlockwise
+#   cam-rotate stop             stop rotating; the real camera is free again
+#   cam-rotate status           show whether it is running
+#
+# Configuration (environment variables):
+#   CAM_ROTATE_CAMERA   part of the camera's name to use, e.g. "Insta360"
+#                       (default: the first real camera found)
+#   CAM_ROTATE_SIZE     capture size, default 1920x1440 (see below)
+#
+# Apply:  install -Dm755 cam-rotate ~/.local/bin/cam-rotate
+#
+# See chapter 19, section 8: ../chapters/19_call_mic.md
+#
+# Requires: v4l2loopback-dkms, ffmpeg. Loading the module needs sudo once
+# per boot, unless it is loaded at boot (see the chapter).
+
+set -euo pipefail
+
+readonly LOOPBACK_NR=10
+readonly LOOPBACK_DEV="/dev/video$LOOPBACK_NR"
+readonly LOOPBACK_LABEL="Rotated Cam"
+readonly CAMERA_MATCH="${CAM_ROTATE_CAMERA:-}"
+# A 4:3 size uses more of the sensor than 16:9, so the rotated picture is
+# wider. Not 4K: decoding 4K MJPEG continuously costs enough CPU to disturb
+# low-latency audio (a DAW) running at the same time.
+readonly SIZE="${CAM_ROTATE_SIZE:-1920x1440}"
+readonly FPS=30
+readonly RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+readonly PIDFILE="$RUNTIME_DIR/cam-rotate.pid"
+readonly LOG="$RUNTIME_DIR/cam-rotate.log"
+
+# ---------------------------------------------------------------- devices ---
+
+# A UVC webcam registers two nodes: the picture (sysfs index 0) and a
+# metadata stream. Only the index 0 node can be captured from. The loopback
+# device is skipped, or the script would try to read its own output.
+find_camera() {
+    local node name
+    for node in /sys/class/video4linux/video*; do
+        [ "/dev/$(basename "$node")" = "$LOOPBACK_DEV" ] && continue
+        [ "$(cat "$node/index" 2>/dev/null)" = 0 ] || continue
+        name="$(cat "$node/name" 2>/dev/null)"
+        if [ -z "$CAMERA_MATCH" ] || [[ "$name" == *"$CAMERA_MATCH"* ]]; then
+            echo "/dev/$(basename "$node")"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# exclusive_caps=1 makes the device advertise itself as a plain camera once
+# ffmpeg is feeding it. Chromium-based browsers ignore it otherwise.
+ensure_loopback() {
+    [ -e "$LOOPBACK_DEV" ] && return 0
+    echo "Loading v4l2loopback (needs sudo)..."
+    sudo modprobe v4l2loopback devices=1 video_nr="$LOOPBACK_NR" \
+        card_label="$LOOPBACK_LABEL" exclusive_caps=1
+}
+
+# ---------------------------------------------------------------- process ---
+
+is_running() {
+    [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
+}
+
+# ffmpeg's transpose filter: 1 = 90° clockwise, 2 = 90° anticlockwise.
+transpose_for() {
+    case "$1" in
+        cw)  echo 1 ;;
+        ccw) echo 2 ;;
+        *)   echo "cam-rotate: direction must be cw or ccw" >&2; return 1 ;;
+    esac
+}
+
+start_ffmpeg() {
+    local camera="$1" transpose="$2"
+    # MJPEG is what webcams send at high resolutions; raw YUV is limited to
+    # low sizes by USB bandwidth. yuv420p is what browsers accept back.
+    nohup ffmpeg -hide_banner -loglevel error \
+        -f v4l2 -input_format mjpeg -video_size "$SIZE" -framerate "$FPS" -i "$camera" \
+        -vf "transpose=$transpose,format=yuv420p" \
+        -f v4l2 "$LOOPBACK_DEV" >"$LOG" 2>&1 &
+    echo $! >"$PIDFILE"
+}
+
+# --------------------------------------------------------------- commands ---
+
+cmd_start() {
+    local transpose camera
+    transpose="$(transpose_for "${1:-cw}")"
+
+    if is_running; then
+        echo "Already running. To change direction: cam-rotate stop, then start again."
+        return 0
+    fi
+
+    camera="$(find_camera)" || { echo "cam-rotate: no camera found" >&2; exit 1; }
+    ensure_loopback
+    start_ffmpeg "$camera" "$transpose"
+
+    # ffmpeg fails within a moment if the camera is busy or the size is
+    # unsupported, so a short wait turns a silent failure into a message.
+    sleep 2
+    if is_running; then
+        echo "Rotating $camera -> $LOOPBACK_DEV (\"$LOOPBACK_LABEL\"). Pick it in the call site."
+    else
+        rm -f "$PIDFILE"
+        echo "cam-rotate: ffmpeg stopped. Is another app using the camera? Log:" >&2
+        cat "$LOG" >&2
+        exit 1
+    fi
+}
+
+cmd_stop() {
+    if is_running; then
+        kill "$(cat "$PIDFILE")"
+        echo "Stopped. The real camera is free again."
+    else
+        echo "Not running"
+    fi
+    rm -f "$PIDFILE"
+}
+
+cmd_status() {
+    if is_running; then
+        echo "Running (pid $(cat "$PIDFILE")), output $LOOPBACK_DEV \"$LOOPBACK_LABEL\""
+    else
+        echo "Not running"
+    fi
+}
+
+usage() {
+    sed -n 's/^#   cam-rotate /  cam-rotate /p' "$0"
+}
+
+main() {
+    case "${1:-}" in
+        start)  cmd_start "${2:-cw}" ;;
+        stop)   cmd_stop ;;
+        status) cmd_status ;;
+        *)      usage; exit 1 ;;
+    esac
+}
+
+main "$@"
