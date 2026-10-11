@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+#
+# remote-access-check -- before you leave a machine running unattended,
+# check that you will be able to reach it and that it will stay up.
+# Read-only. Changes nothing.
+#
+# It answers five questions:
+#
+#   1. Is Tailscale installed, running, starting at boot and signed in?
+#   2. Is sshd running and starting at boot, is there a key to log in with,
+#      and are password logins really off?
+#   3. Does the firewall let SSH and mosh in over the tailnet?
+#   4. Will the machine stay awake, and is it waiting on a reboot?
+#   5. Are the tools for a long remote session (tmux, mosh-server) installed?
+#
+# Usage:
+#   remote-access-check          everything a normal user can see
+#   sudo remote-access-check     also reads the effective sshd settings and
+#                                the firewall rules, which need root
+#
+# Apply:  install -Dm755 remote-access-check ~/.local/bin/remote-access-check
+#
+# See chapter 23: ../chapters/23_remote_access_while_away.md
+#
+# Requires: systemd. Uses tailscale, sshd and ufw if present.
+
+set -uo pipefail
+
+ok()   { printf '  [ ok ] %s\n' "$*"; }
+warn() { printf '  [warn] %s\n' "$*"; }
+skip() { printf '  [skip] %s\n' "$*"; }
+info() { printf '         %s\n' "$*"; }
+head_() { printf '\n%s\n' "$*"; }
+
+TARGET_USER=${SUDO_USER:-$USER}
+TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+IS_ROOT=0
+[[ $EUID -eq 0 ]] && IS_ROOT=1
+
+unit_state() {
+    local unit=$1
+    local enabled active
+    enabled=$(systemctl is-enabled "$unit" 2>/dev/null)
+    active=$(systemctl is-active "$unit" 2>/dev/null)
+    if [[ $enabled == enabled && $active == active ]]; then
+        ok "$unit is running and starts at boot"
+    else
+        warn "$unit is ${active:-unknown} and ${enabled:-not installed} at boot"
+        info "fix: sudo systemctl enable --now $unit"
+    fi
+}
+
+head_ "1. Tailscale"
+if command -v tailscale >/dev/null; then
+    unit_state tailscaled.service
+    if tailscale status >/dev/null 2>&1; then
+        self=$(tailscale status --peers=false | awk 'NR==1 {print $1, $2}')
+        ok "signed in as ${self#* } (${self%% *})"
+        peers=$(tailscale status 2>/dev/null | awk 'NR>1 && $1 ~ /^100\./' | wc -l)
+        if (( peers > 0 )); then
+            ok "$peers other device(s) on the tailnet"
+        else
+            warn "no other devices on the tailnet yet"
+            info "install Tailscale on the laptop and sign in with the same account"
+        fi
+    else
+        warn "not signed in to a tailnet"
+        info "fix: sudo tailscale up"
+    fi
+else
+    warn "tailscale is not installed"
+    info "fix: remote-access-setup, or sudo pacman -S tailscale"
+fi
+
+head_ "2. SSH"
+unit_state sshd.service
+keys="$TARGET_HOME/.ssh/authorized_keys"
+if [[ -s $keys ]]; then
+    ok "$(grep -c . "$keys") line(s) in $keys"
+else
+    warn "$keys is empty, so no key can log in"
+    info "copy your laptop's public key here first (chapter 23, section 5)"
+fi
+if (( IS_ROOT )); then
+    effective=$(sshd -T 2>/dev/null)
+    for setting in "passwordauthentication no" "kbdinteractiveauthentication no" "permitrootlogin no"; do
+        if grep -qx "$setting" <<< "$effective"; then
+            ok "$setting"
+        else
+            warn "expected '$setting', got '$(grep "^${setting%% *} " <<< "$effective")'"
+        fi
+    done
+else
+    skip "effective sshd settings need root: sudo remote-access-check"
+fi
+
+head_ "3. Firewall"
+if ! command -v ufw >/dev/null; then
+    info "UFW is not installed; check whatever firewall you use allows 22/tcp and 60000-61000/udp from tailscale0"
+elif (( IS_ROOT )); then
+    rules=$(ufw status)
+    if ! grep -q '^Status: active' <<< "$rules"; then
+        info "UFW is installed but not active, so it blocks nothing"
+    else
+        for rule in 22/tcp 60000:61000/udp; do
+            if grep -Eq "^$rule on tailscale0 +ALLOW" <<< "$rules"; then
+                ok "$rule allowed on tailscale0"
+            else
+                warn "no rule allowing $rule on tailscale0"
+            fi
+        done
+    fi
+else
+    skip "UFW rules need root: sudo remote-access-check"
+fi
+
+head_ "4. Staying up"
+masked=0
+for target in sleep suspend hibernate hybrid-sleep; do
+    [[ $(systemctl show -p LoadState --value "$target.target") == masked ]] && (( masked++ ))
+done
+if (( masked == 4 )); then
+    ok "sleep, suspend and hibernate are masked; nothing can put the machine to sleep"
+else
+    info "sleep targets are not masked, so the desktop's own power settings decide"
+fi
+idle=$(systemd-analyze cat-config systemd/logind.conf 2>/dev/null | awk -F= '/^IdleAction=/ {v=$2} END {print v}')
+if [[ -z $idle || $idle == ignore ]]; then
+    ok "logind does nothing when the machine is idle"
+else
+    warn "logind IdleAction=$idle"
+fi
+powerdevil="$TARGET_HOME/.config/powerdevilrc"
+if [[ -f $powerdevil ]]; then
+    action=$(awk '/^\[AC\]\[SuspendAndShutdown\]/ {s=1; next} /^\[/ {s=0} s && /^AutoSuspendAction=/ {split($0, a, "="); print a[2]}' "$powerdevil")
+    if [[ $action == 0 ]]; then
+        ok "KDE will not suspend on mains power when idle"
+    else
+        warn "KDE's idle action on mains power is ${action:-the default}, which may suspend"
+        info "fix: System Settings > Power Management > On AC Power > When inactive: Do nothing"
+    fi
+else
+    info "no KDE power settings found; check your desktop's own idle and sleep settings"
+fi
+if [[ -d /usr/lib/modules/$(uname -r) ]]; then
+    ok "running kernel $(uname -r) matches the installed one"
+else
+    warn "the kernel was updated since boot; reboot before you leave, and check it comes back"
+fi
+if [[ -e /var/lib/systemd/linger/$TARGET_USER ]]; then
+    ok "lingering is on for $TARGET_USER: systemd user services start at boot without a login"
+else
+    info "lingering is off for $TARGET_USER: systemd user services only start after a login"
+fi
+info "the BIOS setting that powers the machine back on after a power cut cannot be read from here"
+
+head_ "5. Session tools"
+for tool in tmux mosh-server; do
+    if command -v "$tool" >/dev/null; then
+        ok "$tool installed"
+    else
+        warn "$tool is not installed"
+    fi
+done

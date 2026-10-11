@@ -37,6 +37,9 @@ into four groups:
 * **RGB and fan check** (Linux, used post-install) for seeing which
   lighting and fan controllers are connected, whether your user can reach
   them, and what else is driving them. See [chapter 22](../chapters/22_rgb_and_fan_control.md).
+* **Remote access** (Linux, used post-install) for leaving a machine
+  running while you are away and working on it from a laptop over
+  `Tailscale`, `SSH` and `mosh`. See [chapter 23](../chapters/23_remote_access_while_away.md).
 
 ## Files
 
@@ -64,6 +67,8 @@ into four groups:
 | `rocksmith-asio`             | Rocksmith       | Finds the game's library, prefix and Proton build itself. `status` checks every link from driver to game; `register` copies `PipeASIO` under `$HOME` and registers it through `umu-run`; `install-rsasio <zip>` installs `RS_ASIO` and edits its ini without breaking the `CRLF` endings. Goes in `~/.local/bin`. |
 | `rgb-check`                  | RGB and fans    | Read-only. Lists Corsair controllers on USB, kernel fan drivers and which headers have fans, whether your user can open each controller, whether OpenRGB is running and set to detect the Corsair devices, and any user service that also drives them. Goes in `~/.local/bin`. |
 | `boot-check`                 | Boot diagnosis  | Read-only. Reports startup time and what the display manager waited on, USB devices that never answered (and what shares their hub), greeter crashes and whether they were restarted, and a broken `SDDM` display setup script. Takes a `journalctl -b` offset. Goes in `~/.local/bin`. |
+| `remote-access-setup`        | Remote access   | Installs `openssh`, `tailscale` and `mosh`, starts them at boot, joins the tailnet, allows `SSH` and `mosh` on `tailscale0` in `UFW`, and switches `sshd` to keys only once `authorized_keys` has a key. Safe to re-run. Goes in `~/.local/bin`. |
+| `remote-access-check`        | Remote access   | Read-only. Checks Tailscale is signed in and starts at boot, `sshd` has a key and no password logins, the firewall lets the tailnet in, nothing will put the machine to sleep, and no kernel update is waiting on a reboot. Run with `sudo` for the `sshd` and firewall checks. Goes in `~/.local/bin`. |
 
 ## ISO verification
 
@@ -292,6 +297,21 @@ rgb-check
 Nothing needs root. Run it before installing a lighting or fan program, and
 again if lighting or fans stop responding. Any `[warn]` line names the
 thing to fix. See [chapter 22](../chapters/22_rgb_and_fan_control.md).
+
+## Remote access
+
+```bash
+install -Dm755 remote-access-setup ~/.local/bin/remote-access-setup
+install -Dm755 remote-access-check ~/.local/bin/remote-access-check
+remote-access-setup          # as your user; it calls sudo itself
+sudo remote-access-check     # before you leave
+```
+
+Run `remote-access-setup` once, add your laptop's public key to
+`~/.ssh/authorized_keys`, then run it again to turn password logins off.
+It will not turn them off while that file is empty. A clean
+`remote-access-check` has no `[warn]` lines. See
+[chapter 23](../chapters/23_remote_access_while_away.md).
 
 ## Notes
 

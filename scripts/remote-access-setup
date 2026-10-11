@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+#
+# remote-access-setup -- get a home machine ready to be worked on from
+# anywhere: install Tailscale and mosh, let SSH and mosh in over the tailnet,
+# and switch SSH to keys only once a key is in place.
+#
+# What it does, in order:
+#
+#   1. Installs openssh, tailscale and mosh (skips what is already there).
+#   2. Starts sshd and tailscaled now and at every boot.
+#   3. Joins the machine to your tailnet if it is not on one yet. This prints
+#      a link to sign in with.
+#   4. If UFW is active, allows SSH (22/tcp) and mosh (60000-61000/udp) on
+#      the tailscale0 interface only. Nothing is opened to the internet.
+#   5. If ~/.ssh/authorized_keys has a key in it, installs an sshd drop-in
+#      that turns off password and root logins. If it is empty, this step is
+#      skipped so you cannot lock yourself out. Add your laptop's key and run
+#      the script again.
+#
+# Safe to run more than once. Run it as your normal user, not with sudo; it
+# calls sudo itself for the steps that need root.
+#
+# Usage:
+#   remote-access-setup
+#
+# Apply:  install -Dm755 remote-access-setup ~/.local/bin/remote-access-setup
+#
+# Reverse:
+#   sudo mv /etc/ssh/sshd_config.d/10-remote-access.conf ~/10-remote-access.conf.off
+#   sudo systemctl reload sshd
+#   sudo ufw delete allow in on tailscale0 to any port 22 proto tcp
+#   sudo ufw delete allow in on tailscale0 to any port 60000:61000 proto udp
+#   sudo tailscale logout && sudo systemctl disable --now tailscaled
+#
+# See chapter 23: ../chapters/23_remote_access_while_away.md
+#
+# Requires: pacman, sudo, systemd.
+
+set -euo pipefail
+
+DROP_IN=/etc/ssh/sshd_config.d/10-remote-access.conf
+KEYS="$HOME/.ssh/authorized_keys"
+
+step() { printf '\n==> %s\n' "$*"; }
+info() { printf '    %s\n' "$*"; }
+
+if [[ $EUID -eq 0 ]]; then
+    echo "run this as your normal user, not with sudo; it uses sudo where needed" >&2
+    exit 1
+fi
+
+step "Installing openssh, tailscale and mosh"
+sudo pacman -S --needed --noconfirm openssh tailscale mosh
+
+step "Starting sshd and tailscaled now and at every boot"
+sudo systemctl enable --now sshd tailscaled
+
+if ! tailscale status >/dev/null 2>&1; then
+    step "Joining this machine to your tailnet"
+    info "open the link below and sign in; use the same account on every device"
+    sudo tailscale up
+fi
+info "tailnet address: $(tailscale ip -4)"
+info "tailnet name:    $(tailscale status --peers=false | awk 'NR==1 {print $2}')"
+
+step "Firewall"
+if command -v ufw >/dev/null && sudo ufw status | grep -q '^Status: active'; then
+    sudo ufw allow in on tailscale0 to any port 22 proto tcp comment 'ssh over tailscale'
+    sudo ufw allow in on tailscale0 to any port 60000:61000 proto udp comment 'mosh over tailscale'
+else
+    info "UFW is not active, so there is nothing to open"
+fi
+
+step "SSH logins"
+if [[ -s $KEYS ]]; then
+    printf '%s\n' \
+        '# Installed by remote-access-setup. Keys only, no root.' \
+        'PasswordAuthentication no' \
+        'KbdInteractiveAuthentication no' \
+        'PermitRootLogin no' \
+        'PubkeyAuthentication yes' \
+        | sudo tee "$DROP_IN" >/dev/null
+    if ! sudo sshd -t; then
+        sudo mv "$DROP_IN" "$DROP_IN.rejected"
+        echo "sshd rejected the new settings; moved them aside to $DROP_IN.rejected" >&2
+        exit 1
+    fi
+    sudo systemctl reload sshd
+    info "keys only: $(grep -c . "$KEYS") key(s) in $KEYS can log in, passwords cannot"
+else
+    info "SKIPPED: $KEYS is empty, so passwords stay on for now"
+    info "copy your laptop's public key here (chapter 23, section 5), then run this again"
+fi
+
+step "Done"
+info "run remote-access-check before you leave"

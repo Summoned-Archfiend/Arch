@@ -386,5 +386,5 @@ worth nothing if a crashed sensor leaves the fans idling under a full load.
 Fail loud and fail fast is the right instinct for most software. For fans,
 fail fast means fail at 80%.
 
-| [← Previous](./21_slow_boot_and_login.md) |
-|:--|
+| [← Previous](./21_slow_boot_and_login.md) | [Next →](./23_remote_access_while_away.md) |
+|:--|--:|
