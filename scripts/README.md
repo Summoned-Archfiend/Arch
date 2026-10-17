@@ -40,6 +40,14 @@ into four groups:
 * **Remote access** (Linux, used post-install) for leaving a machine
   running while you are away and working on it from a laptop over
   `Tailscale`, `SSH` and `mosh`. See [chapter 23](../chapters/23_remote_access_while_away.md).
+* **EA app on Steam** (Linux, used post-install) for the copy of the EA
+  app that runs inside an EA game's Steam prefix, such as `The Sims 4`:
+  stuck self-updates, missing registry values and port clashes. See
+  [chapter 24](../chapters/24_sims4_on_steam.md).
+* **Sims 4 mods** (Linux, used post-install) for finding the mods folder
+  inside the game's prefix, linking it somewhere you can reach, and
+  installing mods at a depth the game will load. See
+  [chapter 25](../chapters/25_sims4_modding.md).
 
 ## Files
 
@@ -69,6 +77,8 @@ into four groups:
 | `boot-check`                 | Boot diagnosis  | Read-only. Reports startup time and what the display manager waited on, USB devices that never answered (and what shares their hub), greeter crashes and whether they were restarted, and a broken `SDDM` display setup script. Takes a `journalctl -b` offset. Goes in `~/.local/bin`. |
 | `remote-access-setup`        | Remote access   | Installs `openssh`, `tailscale` and `mosh`, starts them at boot, joins the tailnet, allows `SSH` and `mosh` on `tailscale0` in `UFW`, and switches `sshd` to keys only once `authorized_keys` has a key. Safe to re-run. Goes in `~/.local/bin`. |
 | `remote-access-check`        | Remote access   | Read-only. Checks Tailscale is signed in and starts at boot, `sshd` has a key and no password logins, the firewall lets the tailnet in, nothing will put the machine to sleep, and no kernel update is waiting on a reboot. Run with `sudo` for the `sshd` and firewall checks. Goes in `~/.local/bin`. |
+| `ea-steam`                   | EA app on Steam | Finds the game's library, prefix and Proton build itself. `status` checks the app version, any update stuck waiting to install, the registry values the game uses to find the app, and who holds ports 3215 and 3216; `open` starts the full EA app in the prefix outside Steam; `destage` installs a downloaded update by hand and keeps the old version; `registry` writes the missing values into both registry views. Defaults to The Sims 4, `EA_STEAM_APPID` for other games. Goes in `~/.local/bin`. |
+| `sims4-mods`                 | Sims 4 mods     | Finds the game's documents folder inside its prefix. `link` makes a folder of shortcuts to `Mods`, `Tray`, `saves` and `Screenshots` (default `~/My Games/EA/Sims4`); `install` unpacks downloads and puts each mod in its own folder one level deep, Tray files in `Tray`; `check` reports anything the game will skip; `retire` moves a mod out of `Mods` without deleting it; `clear-cache` and `backup` cover the rest. Goes in `~/.local/bin`. |
 
 ## ISO verification
 
@@ -312,6 +322,41 @@ Run `remote-access-setup` once, add your laptop's public key to
 It will not turn them off while that file is empty. A clean
 `remote-access-check` has no `[warn]` lines. See
 [chapter 23](../chapters/23_remote_access_while_away.md).
+
+## EA app on Steam
+
+Launch the game from Steam once first, so the prefix exists. Then:
+
+```bash
+install -Dm755 ea-steam ~/.local/bin/ea-steam
+ea-steam status
+```
+
+`status` changes nothing and is safe at any time, including with the game
+open. `open`, `destage` and `registry` refuse to run while anything is
+running in the game's prefix, because Steam will not start the game until
+that prefix is empty and a running app would overwrite what they change.
+`destage` never deletes the old version; it renames it to
+`EA Desktop.<version>-backup`. For an EA game other than The Sims 4, set
+`EA_STEAM_APPID` to its Steam app id.
+
+## Sims 4 mods
+
+Start the game once first, so its documents folder exists. Then:
+
+```bash
+sudo pacman -S unzip 7zip
+install -Dm755 sims4-mods ~/.local/bin/sims4-mods
+sims4-mods link
+sims4-mods install ~/Downloads/<mod>.zip
+sims4-mods check
+```
+
+`check` changes nothing. `install`, `retire`, `clear-cache` and `backup`
+refuse to run while the game is open. Nothing is ever deleted: `retire`
+moves a mod to `Mods-retired/` next to `Mods`, and `clear-cache` renames
+the cache to `localthumbcache.package.old`. Set `SIMS4_DOCS` to point the
+script at a documents folder directly.
 
 ## Notes
 

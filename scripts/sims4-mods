@@ -1,0 +1,309 @@
+#!/usr/bin/env bash
+#
+# sims4-mods -- install, check and look after mods for The Sims 4 on Steam
+# under Proton.
+#
+# The game reads mods from its documents folder, which under Proton lives
+# inside the game's prefix, deep in steamapps/compatdata. This script finds
+# that folder for you and enforces the two rules the game loads by:
+#
+#   1. .package files may sit at most five folders deep inside Mods.
+#   2. .ts4script files may sit at most one folder deep inside Mods.
+#
+# Households, lots and rooms (Tray files) belong in Tray, not Mods.
+#
+# Usage:
+#   sims4-mods link [DIR]        make a folder of shortcuts to Mods, Tray, saves and Screenshots
+#   sims4-mods install FILE...   install mods from .zip, .7z, .rar, .package or .ts4script files
+#   sims4-mods check             report anything the game will not load, change nothing
+#   sims4-mods retire NAME       move Mods/NAME out of Mods without deleting it
+#   sims4-mods clear-cache       move the thumbnail cache aside so the game rebuilds it
+#   sims4-mods backup DEST       archive Mods, Tray, saves and settings into DEST
+#
+# Environment:
+#   SIMS4_APPID=<id>          Steam app id (default 1222670)
+#   SIMS4_LIBRARY=<library>   skip the search through libraryfolders.vdf
+#   SIMS4_DOCS=<dir>          use this documents folder directly
+#
+# Apply:  install -Dm755 sims4-mods ~/.local/bin/sims4-mods
+#
+# See chapter 25: ../chapters/25_sims4_modding.md
+#
+# Requires: unzip, 7zip (for .7z and most .rar files), tar.
+
+set -euo pipefail
+
+readonly APPID="${SIMS4_APPID:-1222670}"
+readonly STEAM_ROOT="$HOME/.local/share/Steam"
+readonly DOCS_SUBDIR='pfx/drive_c/users/steamuser/Documents/Electronic Arts/The Sims 4'
+readonly TRAY_EXT='trayitem|blueprint|bpi|hhi|householdbinary|sgi|room|rmi'
+
+# --------------------------------------------------------------- output ---
+
+ok()   { printf '  [ ok ]  %s\n' "$*"; }
+bad()  { printf '  [FAIL]  %s\n' "$*"; FAILED=1; }
+info() { printf '          %s\n' "$*"; }
+die()  { printf 'sims4-mods: %s\n' "$*" >&2; exit 1; }
+
+FAILED=0
+
+# ------------------------------------------------------------ discovery ---
+
+# Steam keeps a list of every library folder and which apps live in each.
+# Walk it and return the library that holds the game.
+find_library() {
+    if [ -n "${SIMS4_LIBRARY:-}" ]; then
+        printf '%s\n' "$SIMS4_LIBRARY"
+        return
+    fi
+    local vdf="$STEAM_ROOT/steamapps/libraryfolders.vdf"
+    [ -f "$vdf" ] || die "no $vdf. Is Steam installed natively (not Flatpak)?"
+    awk -v app="\"$APPID\"" '
+        /^[ \t]*"path"/ {
+            line = $0
+            sub(/^[ \t]*"path"[ \t]*"/, "", line)
+            sub(/"[ \t]*$/, "", line)
+            path = line
+        }
+        $1 == app { print path; exit }
+    ' "$vdf"
+}
+
+resolve_paths() {
+    if [ -n "${SIMS4_DOCS:-}" ]; then
+        DOCS="$SIMS4_DOCS"
+    else
+        local library
+        library="$(find_library)"
+        [ -n "$library" ] || die "app $APPID is not in any Steam library."
+        DOCS="$library/steamapps/compatdata/$APPID/$DOCS_SUBDIR"
+    fi
+    [ -d "$DOCS" ] || die "no documents folder at $DOCS. Start the game once first."
+    MODS="$DOCS/Mods"
+    TRAY="$DOCS/Tray"
+}
+
+game_running() { pgrep -f '[T]S4_x64\.exe' >/dev/null; }
+refuse_if_running() { game_running && die "The Sims 4 is running. Quit the game first." || true; }
+
+# Depth is the number of folders between Mods and the file.
+depth_in_mods() {
+    local rel="${1#"$MODS"/}"
+    local slashes="${rel//[^\/]/}"
+    printf '%s\n' "${#slashes}"
+}
+
+# A folder name from a download's file name: drop the extension and anything
+# that would be awkward in a path.
+mod_name() {
+    local base
+    base="$(basename "$1")"
+    base="${base%.*}"
+    printf '%s\n' "$base" | tr -c 'A-Za-z0-9._+-' '_' | sed 's/_*$//'
+}
+
+# ------------------------------------------------------------- commands ---
+
+cmd_link() {
+    resolve_paths
+    local dir="${1:-$HOME/My Games/EA/Sims4}" d
+    mkdir -p "$dir"
+    for d in Mods Tray saves Screenshots; do
+        mkdir -p "$DOCS/$d"
+        if [ -L "$dir/$d" ]; then
+            info "$dir/$d already exists"
+        elif [ -e "$dir/$d" ]; then
+            bad "$dir/$d exists and is not a link, left alone"
+        else
+            ln -s "$DOCS/$d" "$dir/$d" && ok "$dir/$d"
+        fi
+    done
+    if [ ! -e "$dir/User Folder" ]; then
+        ln -s "$DOCS" "$dir/User Folder" && ok "$dir/User Folder"
+    fi
+    echo
+    echo "These are links. The files still live in the game's prefix."
+    return "$FAILED"
+}
+
+# Copy the mod files out of one extracted download into Mods/NAME, flat.
+# Flat is always legal: one folder deep satisfies both rules.
+place_files() {
+    local src="$1" name="$2" f dest placed=0 skipped=0
+    dest="$MODS/$name"
+    while IFS= read -r -d '' f; do
+        case "${f,,}" in
+            *.package|*.ts4script)
+                mkdir -p "$dest"
+                if [ -e "$dest/$(basename "$f")" ]; then
+                    bad "two files called $(basename "$f") in $name, kept the first"
+                    skipped=$((skipped + 1))
+                else
+                    command cp -- "$f" "$dest/" && placed=$((placed + 1))
+                fi
+                ;;
+            *)
+                if [[ "${f,,}" =~ \.($TRAY_EXT)$ ]]; then
+                    mkdir -p "$TRAY"
+                    command cp -n -- "$f" "$TRAY/" && info "Tray: $(basename "$f")"
+                fi
+                ;;
+        esac
+    done < <(find "$src" -type f -print0)
+    if [ "$placed" -gt 0 ]; then
+        ok "$name: $placed file(s) in Mods/$name"
+    elif [ "$skipped" -eq 0 ]; then
+        info "$name: no .package or .ts4script files (Tray only, or nothing the game reads)"
+    fi
+}
+
+cmd_install() {
+    [ $# -gt 0 ] || die "give one or more files to install"
+    resolve_paths
+    refuse_if_running
+    mkdir -p "$MODS"
+    local f name tmp
+    for f in "$@"; do
+        [ -f "$f" ] || { bad "not a file: $f"; continue; }
+        name="$(mod_name "$f")"
+        if [ -e "$MODS/$name" ]; then
+            bad "Mods/$name already exists. To update it: sims4-mods retire $name, then install again."
+            continue
+        fi
+        # Extract into an empty folder outside Mods, then copy only what the
+        # game reads. Readmes, previews and stray folders never reach Mods.
+        tmp="$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/sims4-mods.XXXXXX")"
+        case "${f,,}" in
+            *.zip)  unzip -qq -- "$f" -d "$tmp" || { bad "could not unzip $f"; command rm -rf -- "$tmp"; continue; } ;;
+            *.7z|*.rar)
+                7z x -y -bd -o"$tmp" -- "$f" >/dev/null \
+                    || { bad "could not extract $f (for .rar, try: sudo pacman -S unrar)"; command rm -rf -- "$tmp"; continue; } ;;
+            *.package|*.ts4script) command cp -- "$f" "$tmp/" ;;
+            *)
+                if [[ "${f,,}" =~ \.($TRAY_EXT)$ ]]; then command cp -- "$f" "$tmp/"
+                else bad "unknown file type: $f"; command rm -rf -- "$tmp"; continue; fi ;;
+        esac
+        place_files "$tmp" "$name"
+        command rm -rf -- "$tmp"
+    done
+    echo
+    echo "Start the game and check the mod list it shows on the main menu."
+    return "$FAILED"
+}
+
+cmd_check() {
+    resolve_paths
+    local f d n
+
+    echo "Settings"
+    if [ -f "$DOCS/Options.ini" ]; then
+        if grep -q '^modsdisabled = 0' "$DOCS/Options.ini"; then ok "custom content enabled"
+        else bad "custom content disabled (Options, Game Options, Other)"; fi
+        if grep -q '^scriptmodsenabled = 1' "$DOCS/Options.ini"; then ok "script mods enabled"
+        else bad "script mods disabled (Options, Game Options, Other)"; fi
+    else
+        info "no Options.ini yet. Start the game once."
+    fi
+
+    echo "Mods folder"
+    [ -d "$MODS" ] || { bad "no Mods folder at $MODS"; return "$FAILED"; }
+    [ -f "$MODS/Resource.cfg" ] && ok "Resource.cfg present" || info "no Resource.cfg. The game writes one on start."
+
+    n=0
+    while IFS= read -r -d '' f; do
+        d="$(depth_in_mods "$f")"
+        case "${f,,}" in
+            *.ts4script) [ "$d" -le 1 ] || { bad "too deep for a script: ${f#"$MODS"/}"; n=$((n + 1)); } ;;
+            *.package)   [ "$d" -le 5 ] || { bad "too deep: ${f#"$MODS"/}"; n=$((n + 1)); } ;;
+            *.zip|*.7z|*.rar) bad "archive the game ignores: ${f#"$MODS"/}"; n=$((n + 1)) ;;
+            *)
+                if [[ "${f,,}" =~ \.($TRAY_EXT)$ ]]; then
+                    bad "Tray file in Mods: ${f#"$MODS"/}"; n=$((n + 1))
+                fi
+                ;;
+        esac
+    done < <(find "$MODS" -type f -print0)
+    [ "$n" -eq 0 ] && ok "every file is somewhere the game can load it"
+
+    local dupes
+    dupes="$(find "$MODS" -type f \( -iname '*.package' -o -iname '*.ts4script' \) -printf '%f\n' \
+        | sort | uniq -d)"
+    if [ -n "$dupes" ]; then
+        bad "the same file name appears more than once (an old copy left behind?):"
+        while IFS= read -r f; do info "$f"; done <<<"$dupes"
+    else
+        ok "no duplicate file names"
+    fi
+
+    echo "Counts"
+    info "$(find "$MODS" -type f -iname '*.package' | wc -l) .package, $(find "$MODS" -type f -iname '*.ts4script' | wc -l) .ts4script"
+
+    echo "Errors"
+    n="$(find "$DOCS" -maxdepth 1 -iname 'last*Exception*.txt' | wc -l)"
+    if [ "$n" -gt 0 ]; then
+        bad "$n exception report(s) in the user folder, newest:"
+        info "$(ls -t "$DOCS"/[Ll]ast*[Ee]xception*.txt 2>/dev/null | head -1)"
+    else
+        ok "no exception reports"
+    fi
+
+    echo
+    if [ "$FAILED" -eq 0 ]; then echo "Everything checks out."; else echo "Something above needs fixing."; fi
+    return "$FAILED"
+}
+
+cmd_retire() {
+    [ $# -eq 1 ] || die "give the name of one folder inside Mods"
+    resolve_paths
+    refuse_if_running
+    local name="${1%/}" dest
+    [ -e "$MODS/$name" ] || die "no Mods/$name"
+    # Outside Mods, or the game would still load it.
+    dest="$DOCS/Mods-retired/$name-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$DOCS/Mods-retired"
+    mv -- "$MODS/$name" "$dest"
+    echo "Moved Mods/$name to"
+    echo "  $dest"
+}
+
+cmd_clear_cache() {
+    resolve_paths
+    refuse_if_running
+    local f
+    f="$DOCS/localthumbcache.package"
+    if [ -f "$f" ]; then
+        mv -- "$f" "$f.old"
+        echo "Moved localthumbcache.package aside. The game rebuilds it on the next start."
+    else
+        echo "No thumbnail cache to clear."
+    fi
+}
+
+cmd_backup() {
+    [ $# -eq 1 ] || die "give a folder to write the backup into"
+    resolve_paths
+    refuse_if_running
+    local dest="$1" out items=() i
+    mkdir -p "$dest"
+    out="$dest/sims4-$(date +%Y%m%d-%H%M%S).tar.gz"
+    for i in Mods Tray saves Screenshots Options.ini; do
+        [ -e "$DOCS/$i" ] && items+=("$i")
+    done
+    # -h follows links, so a Mods folder that is itself a link is archived
+    # as the real files rather than as a dangling pointer.
+    tar -C "$DOCS" -czhf "$out" "${items[@]}"
+    echo "Wrote $out ($(du -h "$out" | cut -f1))"
+}
+
+case "${1:-}" in
+    link)        shift; cmd_link "$@" ;;
+    install)     shift; cmd_install "$@" ;;
+    check)       cmd_check ;;
+    retire)      shift; cmd_retire "$@" ;;
+    clear-cache) cmd_clear_cache ;;
+    backup)      shift; cmd_backup "$@" ;;
+    *)
+        sed -n '/^# Usage:/,/^# Environment:/p' "$0" | sed '$d; s/^# \{0,1\}//'
+        exit 2
+        ;;
+esac

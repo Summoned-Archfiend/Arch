@@ -463,5 +463,5 @@ And with every remote setup, the question is not whether you can get in
 today. It is how many things have to go right for you to get in next
 Thursday, and what happens to each of them when nobody is there.
 
-| [← Previous](./22_rgb_and_fan_control.md) |
-|:--|
+| [← Previous](./22_rgb_and_fan_control.md) | [Next →](./24_sims4_on_steam.md) |
+|:--|--:|

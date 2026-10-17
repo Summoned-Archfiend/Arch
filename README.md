@@ -72,6 +72,8 @@ and I suggest you learn the basics via an `OS` like `Windows` or `Ubuntu` first.
 21. [A Slow Boot and a Login Screen That Never Arrived](./chapters/21_slow_boot_and_login.md)
 22. [RGB Lighting and Fan Control with Prism](./chapters/22_rgb_and_fan_control.md)
 23. [Working on Your Home Machine While You Are Away](./chapters/23_remote_access_while_away.md)
+24. [The Sims 4 on Steam, and the EA App Hiding Inside It](./chapters/24_sims4_on_steam.md)
+25. [Modding The Sims 4 on Arch](./chapters/25_sims4_modding.md)
 
 See also: [Study Guide](./STUDY_GUIDE.md) for a wider learning roadmap, and
 the [scripts](./scripts) folder for helper scripts referenced by the chapters.

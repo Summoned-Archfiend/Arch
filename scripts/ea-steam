@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+#
+# ea-steam -- check and repair the EA app that lives inside a Steam game's
+# Proton prefix, such as The Sims 4.
+#
+# EA games bought on Steam still run through the EA app. Steam installs a
+# copy of it inside the game's own prefix and starts it every time you press
+# Play. Three things go wrong with that copy under Proton:
+#
+#   1. Its self-update downloads and unpacks fine, then never installs,
+#      because the installer runs as a Windows service. Every launch then
+#      shuts the app down to "apply the update" and the game never starts.
+#   2. The registry values the game uses to find the app can be missing, so
+#      the game reports the EA app is not running while it plainly is.
+#   3. A second EA app, in any other prefix, holds the local ports the game
+#      talks to, and the game cannot reach its own app.
+#
+# Usage:
+#   ea-steam status     check the prefix, the app, the registry and the ports, change nothing
+#   ea-steam open       start the full EA app in the game's prefix, outside Steam
+#   ea-steam destage    install an update the app downloaded but could not apply
+#   ea-steam registry   write the values the game uses to find the app
+#
+# Environment:
+#   EA_STEAM_APPID=<id>         Steam app id of the game (default 1222670, The Sims 4)
+#   EA_STEAM_LIBRARY=<library>  skip the search through libraryfolders.vdf
+#
+# Apply:  install -Dm755 ea-steam ~/.local/bin/ea-steam
+#
+# See chapter 24: ../chapters/24_sims4_on_steam.md
+#
+# Requires: steam (native, not Flatpak), the game launched from Steam at
+# least once so the prefix exists, ss (iproute2).
+
+set -euo pipefail
+
+readonly APPID="${EA_STEAM_APPID:-1222670}"
+readonly STEAM_ROOT="$HOME/.local/share/Steam"
+readonly APP_SUBDIR='drive_c/Program Files/Electronic Arts/EA Desktop'
+readonly LOG_SUBDIR='drive_c/ProgramData/EA Desktop/Logs'
+readonly SDK_PORTS='3215|3216'
+
+# --------------------------------------------------------------- output ---
+
+ok()   { printf '  [ ok ]  %s\n' "$*"; }
+bad()  { printf '  [FAIL]  %s\n' "$*"; FAILED=1; }
+info() { printf '          %s\n' "$*"; }
+die()  { printf 'ea-steam: %s\n' "$*" >&2; exit 1; }
+
+FAILED=0
+
+# ------------------------------------------------------------ discovery ---
+
+# Steam keeps a list of every library folder and which apps live in each.
+# Walk it and return the library that holds the game.
+find_library() {
+    if [ -n "${EA_STEAM_LIBRARY:-}" ]; then
+        printf '%s\n' "$EA_STEAM_LIBRARY"
+        return
+    fi
+    local vdf="$STEAM_ROOT/steamapps/libraryfolders.vdf"
+    [ -f "$vdf" ] || die "no $vdf. Is Steam installed natively (not Flatpak)?"
+    awk -v app="\"$APPID\"" '
+        /^[ \t]*"path"/ {
+            line = $0
+            sub(/^[ \t]*"path"[ \t]*"/, "", line)
+            sub(/"[ \t]*$/, "", line)
+            path = line
+        }
+        $1 == app { print path; exit }
+    ' "$vdf"
+}
+
+resolve_paths() {
+    LIBRARY="$(find_library)"
+    [ -n "$LIBRARY" ] || die "app $APPID is not in any Steam library."
+    COMPAT="$LIBRARY/steamapps/compatdata/$APPID"
+    PFX="$COMPAT/pfx"
+    APP_ROOT="$PFX/$APP_SUBDIR"
+    APP_DIR="$APP_ROOT/EA Desktop"
+    LOGS="$PFX/$LOG_SUBDIR"
+    [ -d "$PFX" ] || die "no prefix at $PFX. Launch the game from Steam once first."
+}
+
+# The second line of config_info is a path inside the Proton build that made
+# the prefix. Take the real path rather than guessing from the name in the
+# `version` file, which can differ from the directory name.
+runner_dir() {
+    [ -f "$COMPAT/config_info" ] || return 1
+    sed -n 2p "$COMPAT/config_info" | sed 's#/files/.*##'
+}
+
+# The app writes its version into its own log on every start. The log is the
+# only plain-text record of which build is actually running.
+installed_version() {
+    [ -f "$LOGS/EADesktop.log" ] || return 1
+    grep -aoE 'Version: [0-9.]+-[0-9]+' "$LOGS/EADesktop.log" | tail -1 \
+        | sed -E 's/Version: //; s/-([0-9]+)$/.\1/'
+}
+
+# An unapplied update sits next to the app as <version>-<timestamp>/, holding
+# a complete "EA Desktop" folder. Print the newest one that is complete.
+newest_staged() {
+    local d
+    for d in "$APP_ROOT"/[0-9]*-[0-9]*/; do
+        if [ -f "$d/EA Desktop/EADesktop.exe" ]; then printf '%s\n' "${d%/}"; fi
+    done | sort -V | tail -1
+}
+
+# Every running wineserver carries the prefix it serves in its environment.
+# Print "pid prefix" for each one we are allowed to read.
+wineservers() {
+    local pid env
+    for pid in $(pgrep -x wineserver 2>/dev/null); do
+        env="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+            | sed -n 's/^WINEPREFIX=//p' | sed 's#/$##')"
+        printf '%s %s\n' "$pid" "${env:-unknown}"
+    done
+}
+
+this_prefix_running() { wineservers | awk -v p="$PFX" '$2 == p { f = 1 } END { exit !f }'; }
+
+# The game reaches the app over local TCP ports. Wine opens every socket
+# through the prefix's wineserver, so ss names wineserver rather than the
+# app, and the prefix has to be read from that process.
+port_owners() {
+    local line pid
+    ss -ltnpH 2>/dev/null | grep -E "127\.0\.0\.1:($SDK_PORTS)[[:space:]]" | while read -r line; do
+        pid="$(grep -oE 'pid=[0-9]+' <<<"$line" | head -1 | cut -d= -f2)"
+        printf '%s %s %s\n' "$(awk '{print $4}' <<<"$line")" "${pid:-?}" \
+            "$(wineservers | awk -v p="$pid" '$1 == p { print $2 }')"
+    done
+}
+
+# system.reg stores HKLM\SOFTWARE as [Software\\...] blocks. Print one value
+# from one block, or nothing. The key goes in through the environment because
+# awk -v would turn each \\ into \ and the block would never match.
+reg_value() {
+    REG_KEY="[$1]" REG_NAME="\"$2\"=" awk '
+        index($0, ENVIRON["REG_KEY"] " ") == 1 { inside = 1; next }
+        inside && /^\[/ { exit }
+        inside && index($0, ENVIRON["REG_NAME"]) == 1 { sub(/^[^=]*=/, ""); print; exit }
+    ' "$PFX/system.reg"
+}
+
+# ------------------------------------------------------------- commands ---
+
+cmd_status() {
+    resolve_paths
+    local runner ver staged owners servers
+
+    echo "Game and prefix"
+    ok "app $APPID in $LIBRARY"
+    if runner="$(runner_dir)" && [ -x "$runner/proton" ]; then
+        ok "prefix built by $(basename "$runner")"
+    else
+        bad "cannot find the Proton build named in $COMPAT/config_info"
+    fi
+
+    echo "EA app"
+    if [ -f "$APP_DIR/EADesktop.exe" ]; then
+        ver="$(installed_version || true)"
+        ok "installed${ver:+, last ran as $ver}"
+    else
+        bad "no EADesktop.exe under $APP_DIR"
+    fi
+    staged="$(newest_staged)"
+    if [ -n "$staged" ]; then
+        local sv
+        sv="$(basename "$staged" | sed 's/-[0-9]*$//')"
+        if [ "$sv" = "${ver:-}" ]; then
+            ok "update $sv is staged and already installed"
+        else
+            bad "update $sv is downloaded but not installed. Run: ea-steam destage"
+        fi
+    else
+        ok "no staged update waiting"
+    fi
+    if [ -f "$LOGS/EASteamLauncher.log" ] \
+        && tail -40 "$LOGS/EASteamLauncher.log" | grep -q 'ClientUpdateDestaging'; then
+        bad "the last Steam launch shut down to apply an update"
+    fi
+
+    echo "Registry"
+    local k v
+    for k in 'Software\\Electronic Arts\\EA Desktop' 'Software\\Wow6432Node\\Electronic Arts\\EA Desktop' \
+             'Software\\Origin' 'Software\\Wow6432Node\\Origin'; do
+        v="$(reg_value "$k" ClientPath)"
+        if [ -n "$v" ]; then ok "ClientPath set in [$k]"; else bad "no ClientPath in [$k]. Run: ea-steam registry"; fi
+    done
+
+    echo "Processes and ports"
+    servers="$(wineservers)"
+    if [ -z "$servers" ]; then
+        ok "no wineserver running"
+    else
+        while read -r pid p; do
+            if [ "$p" = "$PFX" ]; then info "wineserver $pid serves this game's prefix"
+            else info "wineserver $pid serves $p"; fi
+        done <<<"$servers"
+    fi
+    owners="$(port_owners)"
+    if [ -z "$owners" ]; then
+        ok "ports 3215 and 3216 are free"
+    else
+        while read -r addr pid p; do
+            if [ "$p" = "$PFX" ]; then ok "$addr held by this game's EA app"
+            else bad "$addr held by ${p:-pid $pid}. Close that EA app before you play."; fi
+        done <<<"$owners"
+    fi
+
+    echo
+    if [ "$FAILED" -eq 0 ]; then echo "Everything checks out."; else echo "Something above needs fixing."; fi
+    return "$FAILED"
+}
+
+cmd_open() {
+    resolve_paths
+    local runner
+    runner="$(runner_dir)" || die "cannot read $COMPAT/config_info"
+    this_prefix_running && die "something is already running in this prefix. Close the game or the EA app first."
+    if [ -n "$(port_owners)" ]; then
+        die "another EA app holds port 3215 or 3216. Close it first (ea-steam status shows which)."
+    fi
+    export STEAM_COMPAT_DATA_PATH="$COMPAT"
+    export STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT"
+    export SteamAppId="$APPID" SteamGameId="$APPID"
+    # runinprefix, not run. "run" starts the exe through Proton's steam.exe
+    # wrapper, which ends every process in the prefix when the exe exits.
+    exec "$runner/proton" runinprefix "$APP_DIR/EADesktop.exe"
+}
+
+cmd_destage() {
+    resolve_paths
+    local staged sv ver backup
+    this_prefix_running && die "something is running in this prefix. Close the game and the EA app first."
+    staged="$(newest_staged)"
+    [ -n "$staged" ] || die "no staged update found under $APP_ROOT"
+    sv="$(basename "$staged" | sed 's/-[0-9]*$//')"
+    ver="$(installed_version || true)"
+    [ "$sv" = "${ver:-}" ] && { echo "$sv is already installed. Nothing to do."; return 0; }
+
+    backup="$APP_DIR.${ver:-old}-backup"
+    [ -e "$backup" ] && backup="$backup-$(date +%Y%m%d-%H%M%S)"
+    mv -- "$APP_DIR" "$backup"
+    command cp -a -- "$staged/EA Desktop" "$APP_DIR"
+
+    echo "Installed $sv from $(basename "$staged")."
+    echo "The previous version is kept at:"
+    echo "  $backup"
+    echo "Start it once with 'ea-steam open' and check it reports $sv before you play."
+}
+
+cmd_registry() {
+    resolve_paths
+    local runner reg win
+    runner="$(runner_dir)" || die "cannot read $COMPAT/config_info"
+    this_prefix_running && die "something is running in this prefix. Close the game and the EA app first."
+    [ -f "$APP_DIR/EADesktop.exe" ] || die "no EA app at $APP_DIR"
+
+    win='C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop'
+    reg="$PFX/drive_c/ea-steam-keys.reg"
+    cat > "$reg" <<EOF
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\\SOFTWARE\\Electronic Arts\\EA Desktop]
+"ClientPath"="$win\\\\EADesktop.exe"
+"DesktopAppPath"="$win\\\\EADesktop.exe"
+"LauncherAppPath"="$win\\\\EALauncher.exe"
+"InstallLocation"="C:\\\\Program Files\\\\Electronic Arts\\\\EA Desktop\\\\"
+"InstallSuccessful"="true"
+
+[HKEY_LOCAL_MACHINE\\SOFTWARE\\Origin]
+"ClientPath"="$win\\\\EADesktop.exe"
+EOF
+
+    export STEAM_COMPAT_DATA_PATH="$COMPAT"
+    export STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT"
+    # The same file goes in twice. Proton's regedit is 32 bit, so Windows
+    # redirects its writes into Wow6432Node. reg.exe with /reg:64 writes the
+    # 64-bit view, which is the one a 64-bit game reads.
+    "$runner/proton" runinprefix regedit /S 'C:\ea-steam-keys.reg' >/dev/null 2>&1
+    "$runner/proton" runinprefix reg import 'C:\ea-steam-keys.reg' /reg:64 >/dev/null 2>&1
+    WINEPREFIX="$PFX" "$runner/files/bin/wineserver" -w 2>/dev/null || true
+
+    echo "Registry values written. Checking:"
+    local k
+    for k in 'Software\\Electronic Arts\\EA Desktop' 'Software\\Wow6432Node\\Electronic Arts\\EA Desktop' \
+             'Software\\Origin' 'Software\\Wow6432Node\\Origin'; do
+        if [ -n "$(reg_value "$k" ClientPath)" ]; then ok "[$k]"; else bad "[$k] still has no ClientPath"; fi
+    done
+    return "$FAILED"
+}
+
+case "${1:-}" in
+    status)   cmd_status ;;
+    open)     cmd_open ;;
+    destage)  cmd_destage ;;
+    registry) cmd_registry ;;
+    *)
+        sed -n '/^# Usage:/,/^# Environment:/p' "$0" | sed '$d; s/^# \{0,1\}//'
+        exit 2
+        ;;
+esac
